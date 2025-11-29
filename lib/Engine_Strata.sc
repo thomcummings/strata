@@ -8,37 +8,40 @@ Engine_Strata : CroneEngine {
     var <filterGroup;
     var <masterGroup;
     var <lfos;
-    var <monitorSynth; 
+    var <monitorSynth;
+    var <reverbSynth;
     var voiceBus;
+    var filterBus;
     
     *new { arg context, doneCallback;
         ^super.new(context, doneCallback);
     }
     
     alloc {
-        // Allocate audio bus for voice mixing
-        voiceBus = Bus.audio(context.server, 2);
-        
+        // Allocate audio buses for signal routing
+        voiceBus = Bus.audio(context.server, 2);    // voices → filter
+        filterBus = Bus.audio(context.server, 2);   // filter → reverb
+
         // Allocate buffer for sample (30 seconds stereo at 48kHz)
         buffer = Buffer.alloc(context.server, 48000 * 30, 2);
-        
+
         // Create synth groups for proper ordering
         voiceGroup = Group.new(context.server);
         filterGroup = Group.after(voiceGroup);
         masterGroup = Group.after(filterGroup);
-        
+
         // Initialize synths array
         synths = Array.newClear(8);
-        
+
         // Initialize LFOs array
         lfos = Array.newClear(3);
-        
+
         // Load SynthDefs
         this.loadSynthDefs;
-        
+
         // Wait for SynthDefs to load
         context.server.sync;
-        
+
         // Create 8 voice synths
         8.do({ arg i;
             synths[i] = Synth(\faderVoice, [
@@ -48,13 +51,27 @@ Engine_Strata : CroneEngine {
                 \xfadeTime, 0.1
             ], voiceGroup);
         });
-        
-        // Create master filter synth (store in filterGroup for set commands)
+
+        // Create master filter synth (voices → filter)
         Synth(\masterFilter, [
             \in, voiceBus,
-            \out, context.out_b
+            \out, filterBus
         ], filterGroup);
-        
+
+        // Create reverb synth (filter → reverb → output)
+        reverbSynth = Synth(\greyhole, [
+            \in, filterBus,
+            \out, context.out_b,
+            \delayTime, 0.1,
+            \damping, 0.5,
+            \size, 1.0,
+            \diff, 0.707,
+            \feedback, 0.9,
+            \modDepth, 0.1,
+            \modFreq, 2.0,
+            \mix, 0.0  // Start completely dry
+        ], masterGroup);
+
         // Create 3 LFO synths
         3.do({ arg i;
             lfos[i] = Synth(\lfo, [
@@ -62,10 +79,10 @@ Engine_Strata : CroneEngine {
                 \depth, 0
             ], masterGroup);
         });
-        
+
         // Add engine commands
         this.addCommands;
-        
+
         postln("strata engine initialized");
     }
     
@@ -155,22 +172,51 @@ Engine_Strata : CroneEngine {
             arg in=0, out=0,
                 cutoff=20000, resonance=0.1, filterType=0,
                 drive=1.0;
-            
+
             var sig, filtered;
-            
+
             sig = In.ar(in, 2);
-            
+
             // Apply drive/saturation
             sig = (sig * drive).tanh;
-            
+
             // Select filter type: 0=LP, 1=HP, 2=BP
             filtered = Select.ar(filterType, [
                 RLPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 1, 0.1)),
                 RHPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 1, 0.1)),
                 BPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 0.5, 0.05))
             ]);
-            
+
             Out.ar(out, filtered);
+        }).add;
+
+        // Greyhole Reverb SynthDef
+        SynthDef(\greyhole, {
+            arg in=0, out=0,
+                delayTime=0.1, damping=0.5, size=1.0, diff=0.707,
+                feedback=0.9, modDepth=0.1, modFreq=2.0, mix=0.0;
+
+            var sig, verb, wet, dry;
+
+            // Read input
+            sig = In.ar(in, 2);
+            dry = sig;
+
+            // JPverb reverb (standard SuperCollider reverb)
+            verb = JPverb.ar(
+                sig,
+                delayTime.clip(0.001, 0.5),  // t60 (decay time)
+                damping.clip(0, 1),           // damp (high freq damping)
+                size.clip(0.5, 5.0),          // size (room size)
+                diff,                          // early diffusion
+                modDepth.clip(0, 50),         // modulation depth
+                modFreq.clip(0.1, 10)         // modulation frequency
+            );
+
+            // Mix wet/dry using crossfade
+            sig = XFade2.ar(dry, verb, mix.clip(0, 1) * 2 - 1);
+
+            Out.ar(out, sig);
         }).add;
         
         // LFO SynthDef
@@ -307,6 +353,24 @@ Engine_Strata : CroneEngine {
                 lfos[lfoNum].set(\rate, rate, \depth, depth, \shape, shape);
             });
         });
+
+        // Reverb control
+        this.addCommand(\setReverbMix, "f", { arg msg;
+            var mix = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\mix, mix);
+        });
+
+        this.addCommand(\setReverbTime, "f", { arg msg;
+            var time = msg[1].asFloat.clip(0.1, 10.0);
+            // Map time (0.1-10s) to delayTime parameter (0.001-0.5)
+            var delayTime = time.linexp(0.1, 10.0, 0.001, 0.5);
+            reverbSynth.set(\delayTime, delayTime);
+        });
+
+        this.addCommand(\setReverbDamping, "f", { arg msg;
+            var damping = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\damping, damping);
+        });
         
         // Voice parameters
         this.addCommand(\setVoiceAmp, "if", { arg msg;
@@ -423,10 +487,12 @@ Engine_Strata : CroneEngine {
     free {
         synths.do(_.free);
         lfos.do(_.free);
+        reverbSynth.free;
         voiceGroup.free;
         filterGroup.free;
         masterGroup.free;
         buffer.free;
         voiceBus.free;
+        filterBus.free;
     }
 }

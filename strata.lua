@@ -2,7 +2,7 @@
 -- Vestax Faderboard emulation for Norns
 -- v1.2 - with Pattern & Euclidean Sequencer
 
-engine.name = "strata"
+engine.name = "Strata"
 
 local ScaleSystem = include("lib/scale_system")
 local MidiHandler = include("lib/midi_handler")
@@ -70,7 +70,12 @@ local state = {
     master_filter_resonance = 0.1,
     master_filter_type = 0,
     filter_drive = 1.0,
-    
+
+    -- Reverb parameters
+    reverb_mix = 0.0,      -- 0.0 to 1.0 (wet/dry blend)
+    reverb_time = 2.0,     -- 0.1 to 10.0 seconds
+    reverb_damping = 0.5,  -- 0.0 to 1.0 (high freq damping)
+
     -- LFO parameters
     lfo_count = 3,  -- Can increase this later
     lfos = {
@@ -895,7 +900,12 @@ function save_scene(slot)
         master_filter_resonance = state.master_filter_resonance,
         master_filter_type = state.master_filter_type,
         filter_drive = state.filter_drive,
-        
+
+        -- Reverb
+        reverb_mix = state.reverb_mix,
+        reverb_time = state.reverb_time,
+        reverb_damping = state.reverb_damping,
+
         -- LFO (placeholder for future)
         lfos = {
             {rate = state.lfos[1].rate, depth = state.lfos[1].depth, shape = state.lfos[1].shape},
@@ -1002,7 +1012,12 @@ function load_scene(slot)
     state.master_filter_resonance = scene.master_filter_resonance
     state.master_filter_type = scene.master_filter_type
     state.filter_drive = scene.filter_drive
-    
+
+    -- Load reverb (with defaults for backward compatibility)
+    state.reverb_mix = scene.reverb_mix or 0.0
+    state.reverb_time = scene.reverb_time or 2.0
+    state.reverb_damping = scene.reverb_damping or 0.5
+
     -- Load LFO (placeholder)
     state.lfos[1].rate = scene.lfos[1].rate
     state.lfos[1].depth = scene.lfos[1].depth
@@ -1038,7 +1053,12 @@ function load_scene(slot)
     engine.setReverse(state.reverse)
     engine.setXfadeTime(state.xfade_time)
     engine.setMasterFilter(state.master_filter_cutoff, state.master_filter_resonance, state.master_filter_type)
-    
+
+    -- Apply reverb settings
+    engine.setReverbMix(state.reverb_mix)
+    engine.setReverbTime(state.reverb_time)
+    engine.setReverbDamping(state.reverb_damping)
+
     for i = 0, state.num_faders - 1 do
         engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
     end
@@ -1137,7 +1157,12 @@ function init()
           engine.setReverse(state.reverse)
           engine.setLoopPoints(state.loop_start, calculate_loop_end())  -- Changed to use helper
           engine.setXfadeTime(state.xfade_time)
-        
+
+        -- Set reverb parameters
+        engine.setReverbMix(state.reverb_mix)
+        engine.setReverbTime(state.reverb_time)
+        engine.setReverbDamping(state.reverb_damping)
+
         -- Set envelope for all voices
         for i = 0, state.num_faders - 1 do
             engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
@@ -1605,10 +1630,10 @@ function enc(n, delta)
     if n == 1 then
     -- Page navigation
     local old_page = state.current_page
-    state.current_page = util.clamp(state.current_page + delta, 1, 9)
+    state.current_page = util.clamp(state.current_page + delta, 1, 10)
     
     -- Reset parameter selection when entering LFO page
-    if state.current_page == 8 and old_page ~= 8 then
+    if state.current_page == 9 and old_page ~= 9 then
         state.lfo_selected_param = 1
         -- Also ensure lfo_selected is valid
         state.lfo_selected = util.clamp(state.lfo_selected, 1, state.lfo_count)
@@ -1869,7 +1894,7 @@ function enc(n, delta)
             elseif state.selected_param == 4 then
                 state.env_release = util.clamp(state.env_release + (delta * 0.05), 0.01, 5.0)
             end
-            
+
             for i = 0, state.num_faders - 1 do
                 engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
             end
@@ -1891,8 +1916,28 @@ function enc(n, delta)
                 update_all_notes()
             end
         end
-        
+
     elseif state.current_page == 7 then
+        -- FX page (reverb)
+        if n == 2 then
+            state.selected_param = util.wrap(state.selected_param + delta, 1, 3)
+        elseif n == 3 then
+            if state.selected_param == 1 then
+                -- Reverb Mix
+                state.reverb_mix = util.clamp(state.reverb_mix + (delta * 0.05), 0.0, 1.0)
+                engine.setReverbMix(state.reverb_mix)
+            elseif state.selected_param == 2 then
+                -- Reverb Time
+                state.reverb_time = util.clamp(state.reverb_time + (delta * 0.1), 0.1, 10.0)
+                engine.setReverbTime(state.reverb_time)
+            elseif state.selected_param == 3 then
+                -- Reverb Damping
+                state.reverb_damping = util.clamp(state.reverb_damping + (delta * 0.05), 0.0, 1.0)
+                engine.setReverbDamping(state.reverb_damping)
+            end
+        end
+
+    elseif state.current_page == 8 then
         -- MIDI settings page
         if n == 2 then
             state.selected_param = util.wrap(state.selected_param + delta, 1, 2)
@@ -1905,8 +1950,8 @@ function enc(n, delta)
                 MidiHandler.set_fader_cc_start(new_cc)
             end
         end
-        
-    elseif state.current_page == 8 then
+
+    elseif state.current_page == 9 then
         -- LFO page
         if n == 2 then
             -- E2: Select parameter
@@ -1972,9 +2017,9 @@ function enc(n, delta)
                     lfo.dest_param = util.wrap(lfo.dest_param + delta, dest.param_min, dest.param_max)
                 end
             end
-        end    
-    
-    elseif state.current_page == 9 then
+        end
+
+    elseif state.current_page == 10 then
         -- SCENES page
         if n == 2 then
             state.scene_selected = util.wrap(state.scene_selected + delta, 1, 8)
@@ -2126,14 +2171,14 @@ function redraw()
     if selecting then
         return
     end
-    
+
     screen.clear()
-    
+
     screen.level(15)
     screen.move(64, 8)
-    local pages = {"PLAY", "SAMPLE", "SNAPSHOTS", "SEQUENCER", "ENVELOPE", "SCALE", "MIDI", "LFO", "SCENES"}
+    local pages = {"PLAY", "SAMPLE", "SNAPSHOTS", "SEQUENCER", "ENVELOPE", "SCALE", "FX", "MIDI", "LFO", "SCENES"}
     screen.text_center(pages[state.current_page])
-    
+
     if state.current_page == 1 then
         draw_play_page()
     elseif state.current_page == 2 then
@@ -2147,13 +2192,15 @@ function redraw()
     elseif state.current_page == 6 then
         draw_scale_page()
     elseif state.current_page == 7 then
-        draw_midi_page()
+        draw_fx_page()
     elseif state.current_page == 8 then
-        draw_lfo_page()
+        draw_midi_page()
     elseif state.current_page == 9 then
+        draw_lfo_page()
+    elseif state.current_page == 10 then
         draw_scenes_page()
     end
-    
+
     screen.update()
 end
 
@@ -2704,13 +2751,13 @@ function draw_envelope_page()
     local env_y = 50
     local env_width = 100
     local env_height = -30
-    
+
     local total_time = state.env_attack + state.env_decay + 0.2 + state.env_release
     local a_width = (state.env_attack / total_time) * env_width
     local d_width = (state.env_decay / total_time) * env_width
     local s_width = (0.2 / total_time) * env_width
     local r_width = (state.env_release / total_time) * env_width
-    
+
     screen.level(10)
     screen.move(env_x, env_y)
     screen.line(env_x + a_width, env_y + env_height)
@@ -2718,7 +2765,7 @@ function draw_envelope_page()
     screen.line(env_x + a_width + d_width + s_width, env_y + (env_height * state.env_sustain))
     screen.line(env_x + a_width + d_width + s_width + r_width, env_y)
     screen.stroke()
-    
+
     -- Draw parameters horizontally at bottom with units
     local params = {
         {label = "A", value = string.format("%.2fs", state.env_attack), x = 0},
@@ -2726,15 +2773,15 @@ function draw_envelope_page()
         {label = "S", value = string.format("%.2f", state.env_sustain), x = 64},
         {label = "R", value = string.format("%.2fs", state.env_release), x = 94}
     }
-    
+
     for i = 1, 4 do
         local param = params[i]
         local is_selected = (state.selected_param == i)
-        
+
         screen.level(is_selected and 15 or 8)
         screen.move(param.x, 60)
         screen.text(param.label .. ": " .. param.value)
-        
+
         -- Draw selection indicator (underline)
         if is_selected then
             screen.level(15)
@@ -2742,6 +2789,32 @@ function draw_envelope_page()
             screen.move(param.x, 62)
             screen.line(param.x + text_width, 62)
             screen.stroke()
+        end
+    end
+end
+
+function draw_fx_page()
+    screen.level(10)
+
+    -- Title
+    screen.move(4, 10)
+    screen.text("FX - REVERB")
+
+    -- Draw parameters
+    local params = {"Mix", "Time", "Damping"}
+    for i = 1, 3 do
+        local y = 20 + (i * 10)
+        screen.level(state.selected_param == i and 15 or 6)
+        screen.move(4, y)
+        screen.text(params[i] .. ":")
+
+        screen.move(60, y)
+        if i == 1 then
+            screen.text(string.format("%d%%", math.floor(state.reverb_mix * 100)))
+        elseif i == 2 then
+            screen.text(string.format("%.1fs", state.reverb_time))
+        elseif i == 3 then
+            screen.text(string.format("%d%%", math.floor(state.reverb_damping * 100)))
         end
     end
 end
