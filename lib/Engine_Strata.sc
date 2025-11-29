@@ -102,17 +102,18 @@ Engine_Strata : CroneEngine {
             var loopLength, xfadeFrames, normPhase, window;
             
             bufFrames = BufFrames.kr(bufnum);
-            
+
             // Calculate start and end frames
             startFrame = loopStart * bufFrames;
             endFrame = loopEnd * bufFrames;
             loopLength = endFrame - startFrame;
-            
+
             // Crossfade: fixed at 5% of loop length or 20ms, whichever is smaller
             xfadeFrames = min(loopLength * 0.05, SampleRate.ir * 0.02);
-            
-            // Playback rate combines pitch shift and speed
-            playRate = BufRateScale.kr(bufnum) * (freq / 440.0) * speed;
+
+            // Playback rate combines pitch shift, speed, and reverse
+            // reverse: 0 = forward (1), 1 = backward (-1)
+            playRate = BufRateScale.kr(bufnum) * (freq / 440.0) * speed * (1 - (2 * reverse));
             
             // Envelope: ADSR with minimum values to prevent clicks
             env = EnvGen.kr(
@@ -129,15 +130,18 @@ Engine_Strata : CroneEngine {
                 endFrame,
                 startFrame
             );
-            
+
             // Read from buffer with cubic interpolation
-            sig = BufRd.ar(
-                2,
-                bufnum,
-                playhead,
-                1, // loop (BufRd internal loop)
-                4  // cubic interpolation
-            );
+            // Detect mono vs stereo and handle accordingly
+            sig = (BufChannels.kr(bufnum) == 1).if({
+                // Mono buffer: create pseudo-stereo with slight delay
+                var mono = BufRd.ar(1, bufnum, playhead, 1, 4);
+                var delayed = DelayC.ar(mono, 0.01, 0.005);  // 5ms delay on right
+                [mono, delayed]
+            }, {
+                // Stereo buffer: read normally
+                BufRd.ar(2, bufnum, playhead, 1, 4)
+            });
             
             // Apply simple window at loop boundaries to smooth discontinuities
             // Normalized phase within loop (0 to 1)
