@@ -62,14 +62,14 @@ Engine_Strata : CroneEngine {
         reverbSynth = Synth(\greyhole, [
             \in, filterBus,
             \out, context.out_b,
-            \delayTime, 0.1,
-            \damping, 0.5,
-            \size, 1.0,
-            \diff, 0.707,
-            \feedback, 0.9,
-            \modDepth, 0.1,
-            \modFreq, 2.0,
-            \mix, 0.0  // Start completely dry
+            \delayTime, 0.2,      // Initial delay time (will be set by Lua)
+            \damping, 0.5,         // Initial damping
+            \size, 2.0,            // Larger room size for better quality
+            \diff, 0.7,            // Good diffusion
+            \feedback, 0.9,        // High feedback for long decay
+            \modDepth, 0.2,        // Moderate modulation depth
+            \modFreq, 0.5,         // Slow modulation for smooth sound
+            \mix, 0.0              // Start completely dry
         ], masterGroup);
 
         // Create 3 LFO synths
@@ -190,7 +190,7 @@ Engine_Strata : CroneEngine {
             Out.ar(out, filtered);
         }).add;
 
-        // Greyhole Reverb SynthDef
+        // Greyhole Reverb SynthDef (mi-engines)
         SynthDef(\greyhole, {
             arg in=0, out=0,
                 delayTime=0.1, damping=0.5, size=1.0, diff=0.707,
@@ -202,15 +202,17 @@ Engine_Strata : CroneEngine {
             sig = In.ar(in, 2);
             dry = sig;
 
-            // JPverb reverb (standard SuperCollider reverb)
-            verb = JPverb.ar(
+            // Greyhole reverb (mi-engines - high quality)
+            // Greyhole expects: delayTime, damping, size, diff, feedback, modDepth, modFreq
+            verb = Greyhole.ar(
                 sig,
-                delayTime.clip(0.001, 0.5),  // t60 (decay time)
-                damping.clip(0, 1),           // damp (high freq damping)
-                size.clip(0.5, 5.0),          // size (room size)
-                diff,                          // early diffusion
-                modDepth.clip(0, 50),         // modulation depth
-                modFreq.clip(0.1, 10)         // modulation frequency
+                delayTime.clip(0.001, 2.0),   // delay time (0.001-2.0)
+                damping.clip(0, 1),            // damping (0-1)
+                size.clip(0.5, 5.0),           // size (0.5-5.0)
+                diff.clip(0, 1),               // diffusion (0-1)
+                feedback.clip(0, 1),           // feedback (0-1)
+                modDepth.clip(0, 1),           // modulation depth (0-1)
+                modFreq.clip(0.1, 10)          // modulation freq (0.1-10)
             );
 
             // Mix wet/dry using crossfade
@@ -362,8 +364,9 @@ Engine_Strata : CroneEngine {
 
         this.addCommand(\setReverbTime, "f", { arg msg;
             var time = msg[1].asFloat.clip(0.1, 10.0);
-            // Map time (0.1-10s) to delayTime parameter (0.001-0.5)
-            var delayTime = time.linexp(0.1, 10.0, 0.001, 0.5);
+            // Map time (0.1-10s) to delayTime parameter (0.001-2.0)
+            // Use exponential mapping for more natural control
+            var delayTime = time.linexp(0.1, 10.0, 0.01, 2.0);
             reverbSynth.set(\delayTime, delayTime);
         });
 
