@@ -1630,10 +1630,10 @@ function enc(n, delta)
     if n == 1 then
     -- Page navigation
     local old_page = state.current_page
-    state.current_page = util.clamp(state.current_page + delta, 1, 9)
+    state.current_page = util.clamp(state.current_page + delta, 1, 10)
     
     -- Reset parameter selection when entering LFO page
-    if state.current_page == 8 and old_page ~= 8 then
+    if state.current_page == 9 and old_page ~= 9 then
         state.lfo_selected_param = 1
         -- Also ensure lfo_selected is valid
         state.lfo_selected = util.clamp(state.lfo_selected, 1, state.lfo_count)
@@ -1881,42 +1881,22 @@ function enc(n, delta)
         end
     
     elseif state.current_page == 5 then
-        -- ENVELOPE page (now includes reverb)
+        -- ENVELOPE page
         if n == 2 then
-            state.selected_param = util.wrap(state.selected_param + delta, 1, 7)
+            state.selected_param = util.wrap(state.selected_param + delta, 1, 4)
         elseif n == 3 then
             if state.selected_param == 1 then
                 state.env_attack = util.clamp(state.env_attack + (delta * 0.01), 0.001, 2.0)
-                for i = 0, state.num_faders - 1 do
-                    engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
-                end
             elseif state.selected_param == 2 then
                 state.env_decay = util.clamp(state.env_decay + (delta * 0.01), 0.01, 2.0)
-                for i = 0, state.num_faders - 1 do
-                    engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
-                end
             elseif state.selected_param == 3 then
                 state.env_sustain = util.clamp(state.env_sustain + (delta * 0.05), 0, 1.0)
-                for i = 0, state.num_faders - 1 do
-                    engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
-                end
             elseif state.selected_param == 4 then
                 state.env_release = util.clamp(state.env_release + (delta * 0.05), 0.01, 5.0)
-                for i = 0, state.num_faders - 1 do
-                    engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
-                end
-            elseif state.selected_param == 5 then
-                -- Reverb Mix
-                state.reverb_mix = util.clamp(state.reverb_mix + (delta * 0.05), 0.0, 1.0)
-                engine.setReverbMix(state.reverb_mix)
-            elseif state.selected_param == 6 then
-                -- Reverb Time
-                state.reverb_time = util.clamp(state.reverb_time + (delta * 0.1), 0.1, 10.0)
-                engine.setReverbTime(state.reverb_time)
-            elseif state.selected_param == 7 then
-                -- Reverb Damping
-                state.reverb_damping = util.clamp(state.reverb_damping + (delta * 0.05), 0.0, 1.0)
-                engine.setReverbDamping(state.reverb_damping)
+            end
+
+            for i = 0, state.num_faders - 1 do
+                engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
             end
         end
         
@@ -1936,8 +1916,28 @@ function enc(n, delta)
                 update_all_notes()
             end
         end
-        
+
     elseif state.current_page == 7 then
+        -- FX page (reverb)
+        if n == 2 then
+            state.selected_param = util.wrap(state.selected_param + delta, 1, 3)
+        elseif n == 3 then
+            if state.selected_param == 1 then
+                -- Reverb Mix
+                state.reverb_mix = util.clamp(state.reverb_mix + (delta * 0.05), 0.0, 1.0)
+                engine.setReverbMix(state.reverb_mix)
+            elseif state.selected_param == 2 then
+                -- Reverb Time
+                state.reverb_time = util.clamp(state.reverb_time + (delta * 0.1), 0.1, 10.0)
+                engine.setReverbTime(state.reverb_time)
+            elseif state.selected_param == 3 then
+                -- Reverb Damping
+                state.reverb_damping = util.clamp(state.reverb_damping + (delta * 0.05), 0.0, 1.0)
+                engine.setReverbDamping(state.reverb_damping)
+            end
+        end
+
+    elseif state.current_page == 8 then
         -- MIDI settings page
         if n == 2 then
             state.selected_param = util.wrap(state.selected_param + delta, 1, 2)
@@ -1950,8 +1950,8 @@ function enc(n, delta)
                 MidiHandler.set_fader_cc_start(new_cc)
             end
         end
-        
-    elseif state.current_page == 8 then
+
+    elseif state.current_page == 9 then
         -- LFO page
         if n == 2 then
             -- E2: Select parameter
@@ -2017,9 +2017,9 @@ function enc(n, delta)
                     lfo.dest_param = util.wrap(lfo.dest_param + delta, dest.param_min, dest.param_max)
                 end
             end
-        end    
-    
-    elseif state.current_page == 9 then
+        end
+
+    elseif state.current_page == 10 then
         -- SCENES page
         if n == 2 then
             state.scene_selected = util.wrap(state.scene_selected + delta, 1, 8)
@@ -2171,14 +2171,14 @@ function redraw()
     if selecting then
         return
     end
-    
+
     screen.clear()
-    
+
     screen.level(15)
     screen.move(64, 8)
-    local pages = {"PLAY", "SAMPLE", "SNAPSHOTS", "SEQUENCER", "ENVELOPE", "SCALE", "MIDI", "LFO", "SCENES"}
+    local pages = {"PLAY", "SAMPLE", "SNAPSHOTS", "SEQUENCER", "ENVELOPE", "SCALE", "FX", "MIDI", "LFO", "SCENES"}
     screen.text_center(pages[state.current_page])
-    
+
     if state.current_page == 1 then
         draw_play_page()
     elseif state.current_page == 2 then
@@ -2192,13 +2192,15 @@ function redraw()
     elseif state.current_page == 6 then
         draw_scale_page()
     elseif state.current_page == 7 then
-        draw_midi_page()
+        draw_fx_page()
     elseif state.current_page == 8 then
-        draw_lfo_page()
+        draw_midi_page()
     elseif state.current_page == 9 then
+        draw_lfo_page()
+    elseif state.current_page == 10 then
         draw_scenes_page()
     end
-    
+
     screen.update()
 end
 
@@ -2744,11 +2746,11 @@ function draw_sequencer_page()
 end
 
 function draw_envelope_page()
-    -- Draw envelope visualization (smaller, at top)
+    -- Draw envelope visualization (larger, centered)
     local env_x = 14
-    local env_y = 35
+    local env_y = 50
     local env_width = 100
-    local env_height = -20
+    local env_height = -30
 
     local total_time = state.env_attack + state.env_decay + 0.2 + state.env_release
     local a_width = (state.env_attack / total_time) * env_width
@@ -2764,41 +2766,55 @@ function draw_envelope_page()
     screen.line(env_x + a_width + d_width + s_width + r_width, env_y)
     screen.stroke()
 
-    -- Draw parameters in scrollable list
-    local params = {"Attack", "Decay", "Sustain", "Release", "Rvb Mix", "Rvb Time", "Rvb Damp"}
-    local param_start_y = 40
-    local param_spacing = 7
-    local visible_params = 3
+    -- Draw parameters horizontally at bottom with units
+    local params = {
+        {label = "A", value = string.format("%.2fs", state.env_attack), x = 0},
+        {label = "D", value = string.format("%.2fs", state.env_decay), x = 32},
+        {label = "S", value = string.format("%.2f", state.env_sustain), x = 64},
+        {label = "R", value = string.format("%.2fs", state.env_release), x = 94}
+    }
 
-    local scroll_offset = 0
-    if state.selected_param > visible_params then
-        scroll_offset = -(state.selected_param - visible_params) * param_spacing
+    for i = 1, 4 do
+        local param = params[i]
+        local is_selected = (state.selected_param == i)
+
+        screen.level(is_selected and 15 or 8)
+        screen.move(param.x, 60)
+        screen.text(param.label .. ": " .. param.value)
+
+        -- Draw selection indicator (underline)
+        if is_selected then
+            screen.level(15)
+            local text_width = #(param.label .. ": " .. param.value) * 4
+            screen.move(param.x, 62)
+            screen.line(param.x + text_width, 62)
+            screen.stroke()
+        end
     end
+end
 
-    for i = 1, 7 do
-        local y = param_start_y + (i * param_spacing) + scroll_offset
+function draw_fx_page()
+    screen.level(10)
 
-        if y > 38 and y < 64 then
-            screen.level(state.selected_param == i and 15 or 6)
-            screen.move(4, y)
-            screen.text(params[i] .. ":")
+    -- Title
+    screen.move(4, 10)
+    screen.text("FX - REVERB")
 
-            screen.move(60, y)
-            if i == 1 then
-                screen.text(string.format("%.2fs", state.env_attack))
-            elseif i == 2 then
-                screen.text(string.format("%.2fs", state.env_decay))
-            elseif i == 3 then
-                screen.text(string.format("%.2f", state.env_sustain))
-            elseif i == 4 then
-                screen.text(string.format("%.2fs", state.env_release))
-            elseif i == 5 then
-                screen.text(string.format("%d%%", math.floor(state.reverb_mix * 100)))
-            elseif i == 6 then
-                screen.text(string.format("%.1fs", state.reverb_time))
-            elseif i == 7 then
-                screen.text(string.format("%d%%", math.floor(state.reverb_damping * 100)))
-            end
+    -- Draw parameters
+    local params = {"Mix", "Time", "Damping"}
+    for i = 1, 3 do
+        local y = 20 + (i * 10)
+        screen.level(state.selected_param == i and 15 or 6)
+        screen.move(4, y)
+        screen.text(params[i] .. ":")
+
+        screen.move(60, y)
+        if i == 1 then
+            screen.text(string.format("%d%%", math.floor(state.reverb_mix * 100)))
+        elseif i == 2 then
+            screen.text(string.format("%.1fs", state.reverb_time))
+        elseif i == 3 then
+            screen.text(string.format("%d%%", math.floor(state.reverb_damping * 100)))
         end
     end
 end
