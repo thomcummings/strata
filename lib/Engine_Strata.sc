@@ -370,9 +370,34 @@ Engine_Strata : CroneEngine {
             reverbSynth.set(\delayTime, delayTime);
         });
 
+        this.addCommand(\setReverbSize, "f", { arg msg;
+            var size = msg[1].asFloat.clip(0.5, 5.0);
+            reverbSynth.set(\size, size);
+        });
+
         this.addCommand(\setReverbDamping, "f", { arg msg;
             var damping = msg[1].asFloat.clip(0.0, 1.0);
             reverbSynth.set(\damping, damping);
+        });
+
+        this.addCommand(\setReverbFeedback, "f", { arg msg;
+            var feedback = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\feedback, feedback);
+        });
+
+        this.addCommand(\setReverbDiff, "f", { arg msg;
+            var diff = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\diff, diff);
+        });
+
+        this.addCommand(\setReverbModDepth, "f", { arg msg;
+            var modDepth = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\modDepth, modDepth);
+        });
+
+        this.addCommand(\setReverbModFreq, "f", { arg msg;
+            var modFreq = msg[1].asFloat.clip(0.1, 10.0);
+            reverbSynth.set(\modFreq, modFreq);
         });
         
         // Voice parameters
