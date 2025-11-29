@@ -2,7 +2,7 @@
 -- Vestax Faderboard emulation for Norns
 -- v1.2 - with Pattern & Euclidean Sequencer
 
-engine.name = "strata"
+engine.name = "Strata"
 
 local ScaleSystem = include("lib/scale_system")
 local MidiHandler = include("lib/midi_handler")
