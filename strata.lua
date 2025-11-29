@@ -2888,15 +2888,20 @@ function draw_envelope_page()
 end
 
 function draw_fx_page()
-    screen.level(10)
-
     -- Title
-    screen.move(4, 10)
-    screen.text("FX - REVERB (GREYHOLE)")
+    screen.level(15)
+    screen.move(4, 12)
+    screen.text("REVERB")
+
+    -- Dividing line
+    screen.level(4)
+    screen.move(4, 14)
+    screen.line(124, 14)
+    screen.stroke()
 
     -- Draw parameters with scrolling
     local params = {"Mix", "Time", "Size", "Damping", "Feedback", "Diffusion", "Mod Depth", "Mod Freq"}
-    local param_start_y = 18
+    local param_start_y = 22
     local param_spacing = 7
     local visible_params = 5
 
