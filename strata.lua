@@ -1923,16 +1923,16 @@ function enc(n, delta)
             state.selected_param = util.wrap(state.selected_param + delta, 1, 3)
         elseif n == 3 then
             if state.selected_param == 1 then
-                -- Reverb Mix
-                state.reverb_mix = util.clamp(state.reverb_mix + (delta * 0.05), 0.0, 1.0)
+                -- Reverb Mix (1% increments)
+                state.reverb_mix = util.clamp(state.reverb_mix + (delta * 0.01), 0.0, 1.0)
                 engine.setReverbMix(state.reverb_mix)
             elseif state.selected_param == 2 then
                 -- Reverb Time
                 state.reverb_time = util.clamp(state.reverb_time + (delta * 0.1), 0.1, 10.0)
                 engine.setReverbTime(state.reverb_time)
             elseif state.selected_param == 3 then
-                -- Reverb Damping
-                state.reverb_damping = util.clamp(state.reverb_damping + (delta * 0.05), 0.0, 1.0)
+                -- Reverb Damping (1% increments)
+                state.reverb_damping = util.clamp(state.reverb_damping + (delta * 0.01), 0.0, 1.0)
                 engine.setReverbDamping(state.reverb_damping)
             end
         end
