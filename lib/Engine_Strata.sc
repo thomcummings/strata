@@ -1,0 +1,432 @@
+// Engine_Strata.sc
+// SuperCollider engine for strata norns script by thomcummings
+
+Engine_Strata : CroneEngine {
+    var <synths;
+    var <buffer;
+    var <voiceGroup;
+    var <filterGroup;
+    var <masterGroup;
+    var <lfos;
+    var <monitorSynth; 
+    var voiceBus;
+    
+    *new { arg context, doneCallback;
+        ^super.new(context, doneCallback);
+    }
+    
+    alloc {
+        // Allocate audio bus for voice mixing
+        voiceBus = Bus.audio(context.server, 2);
+        
+        // Allocate buffer for sample (30 seconds stereo at 48kHz)
+        buffer = Buffer.alloc(context.server, 48000 * 30, 2);
+        
+        // Create synth groups for proper ordering
+        voiceGroup = Group.new(context.server);
+        filterGroup = Group.after(voiceGroup);
+        masterGroup = Group.after(filterGroup);
+        
+        // Initialize synths array
+        synths = Array.newClear(8);
+        
+        // Initialize LFOs array
+        lfos = Array.newClear(3);
+        
+        // Load SynthDefs
+        this.loadSynthDefs;
+        
+        // Wait for SynthDefs to load
+        context.server.sync;
+        
+        // Create 8 voice synths
+        8.do({ arg i;
+            synths[i] = Synth(\faderVoice, [
+                \out, voiceBus,
+                \bufnum, buffer.bufnum,
+                \voiceId, i,
+                \xfadeTime, 0.1
+            ], voiceGroup);
+        });
+        
+        // Create master filter synth (store in filterGroup for set commands)
+        Synth(\masterFilter, [
+            \in, voiceBus,
+            \out, context.out_b
+        ], filterGroup);
+        
+        // Create 3 LFO synths
+        3.do({ arg i;
+            lfos[i] = Synth(\lfo, [
+                \rate, 1,
+                \depth, 0
+            ], masterGroup);
+        });
+        
+        // Add engine commands
+        this.addCommands;
+        
+        postln("strata engine initialized");
+    }
+    
+    loadSynthDefs {
+        // Voice SynthDef - plays pitched sample with gating
+        SynthDef(\faderVoice, {
+            arg out=0, bufnum=0, 
+                gate=0, freq=440, amp=0.8, pan=0,
+                loopStart=0, loopEnd=1, speed=1.0, reverse=0,
+                faderPos=0,
+                filterCutoff=20000, filterRes=0.1, filterOffset=0,
+                attack=0.001, decay=0.1, sustain=0.7, release=0.2,
+                xfadeTime=0.1;
+            
+            var sig, env, playhead, startFrame, endFrame, bufFrames, playRate;
+            var filterFreq, localFilter;
+            var loopLength, xfadeFrames, normPhase, window;
+            
+            bufFrames = BufFrames.kr(bufnum);
+            
+            // Calculate start and end frames
+            startFrame = loopStart * bufFrames;
+            endFrame = loopEnd * bufFrames;
+            loopLength = endFrame - startFrame;
+            
+            // Crossfade: fixed at 5% of loop length or 20ms, whichever is smaller
+            xfadeFrames = min(loopLength * 0.05, SampleRate.ir * 0.02);
+            
+            // Playback rate combines pitch shift and speed
+            playRate = BufRateScale.kr(bufnum) * (freq / 440.0) * speed;
+            
+            // Envelope: ADSR with minimum values to prevent clicks
+            env = EnvGen.kr(
+                Env.adsr(max(attack, 0.01), decay, sustain, max(release, 0.02)),
+                gate,
+                doneAction: 0
+            );
+            
+            // Phasor for loop playback
+            playhead = Phasor.ar(
+                0,
+                playRate,
+                startFrame,
+                endFrame,
+                startFrame
+            );
+            
+            // Read from buffer with cubic interpolation
+            sig = BufRd.ar(
+                2,
+                bufnum,
+                playhead,
+                1, // loop (BufRd internal loop)
+                4  // cubic interpolation
+            );
+            
+            // Apply simple window at loop boundaries to smooth discontinuities
+            // Normalized phase within loop (0 to 1)
+            normPhase = (playhead - startFrame) / loopLength;
+            
+            // Create fade window: fade in at start, fade out at end
+            window = min(
+                (normPhase * loopLength / xfadeFrames).clip(0, 1), // Fade in
+                ((1 - normPhase) * loopLength / xfadeFrames).clip(0, 1) // Fade out
+            );
+            
+            sig = sig * window;
+            
+            // Apply envelope, fader position, and amp
+            sig = sig * env * amp * faderPos.lag(0.002);
+            
+            // Per-voice filter
+            filterFreq = (filterCutoff + filterOffset).clip(20, 20000);
+            localFilter = RLPF.ar(sig, filterFreq, filterRes.linlin(0, 1, 1, 0.1));
+            
+            // Pan
+            sig = Balance2.ar(localFilter[0], localFilter[1], pan);
+            
+            // DC blocker
+            sig = LeakDC.ar(sig, 0.995);
+            
+            Out.ar(out, sig);
+        }).add;
+        
+        // Master Filter SynthDef
+        SynthDef(\masterFilter, {
+            arg in=0, out=0,
+                cutoff=20000, resonance=0.1, filterType=0,
+                drive=1.0;
+            
+            var sig, filtered;
+            
+            sig = In.ar(in, 2);
+            
+            // Apply drive/saturation
+            sig = (sig * drive).tanh;
+            
+            // Select filter type: 0=LP, 1=HP, 2=BP
+            filtered = Select.ar(filterType, [
+                RLPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 1, 0.1)),
+                RHPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 1, 0.1)),
+                BPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 0.5, 0.05))
+            ]);
+            
+            Out.ar(out, filtered);
+        }).add;
+        
+        // LFO SynthDef
+        SynthDef(\lfo, {
+            arg bus=0, rate=1, depth=0.5, shape=0;
+            var lfo;
+            
+            // Select LFO shape: 0=sine, 1=tri, 2=random
+            lfo = Select.kr(shape, [
+                SinOsc.kr(rate),
+                LFTri.kr(rate),
+                LFNoise0.kr(rate)
+            ]);
+            
+            // Scale by depth
+            lfo = lfo * depth;
+            
+            Out.kr(bus, lfo);
+        }).add;
+        
+        // Input monitoring SynthDef for recording VU meters
+        SynthDef(\inputMonitor, {
+            arg out=0;
+            var input, peak_l, peak_r;
+            
+            // Read stereo input
+            input = SoundIn.ar([0, 1]);
+            
+            // Measure peak levels
+            peak_l = Amplitude.kr(input[0], 0.01, 0.1);
+            peak_r = Amplitude.kr(input[1], 0.01, 0.1);
+            
+            // Send via SendReply (norns handles routing automatically)
+            SendReply.kr(Impulse.kr(20), '/input_levels', [peak_l, peak_r]);
+        }).add;
+    }
+    
+    addCommands {
+        // Voice control commands
+        this.addCommand(\noteOn, "if", { arg msg;
+            var voice = msg[1].asInteger;
+            var freq = msg[2].asFloat;
+            postln("Engine noteOn: voice=" ++ voice ++ " freq=" ++ freq);
+            if(voice >= 0 and: { voice < 8 }, {
+                synths[voice].set(\gate, 1, \freq, freq);
+            });
+        });
+        
+        this.addCommand(\noteOff, "i", { arg msg;
+            var voice = msg[1].asInteger;
+            if(voice >= 0 and: { voice < 8 }, {
+                synths[voice].set(\gate, 0);
+            });
+        });
+        
+        this.addCommand(\setFaderPos, "if", { arg msg;
+            var voice = msg[1].asInteger;
+            var pos = msg[2].asFloat;
+            if(voice >= 0 and: { voice < 8 }, {
+                synths[voice].set(\faderPos, pos);
+            });
+        });
+        
+        // Sample loading
+        this.addCommand(\loadSample, "s", { arg msg;
+            var path = msg[1].asString;
+            postln("Engine loading sample: " ++ path);
+            buffer.allocRead(path, completionMessage: {
+                var duration = buffer.numFrames / context.server.sampleRate;
+                
+                postln("Sample loaded: " ++ path ++ " frames=" ++ buffer.numFrames);
+                postln("Duration: " ++ duration ++ " seconds");
+                
+                // Send duration to Lua via OSC
+                context.server.addr.sendMsg("/sample_duration", duration);
+                
+                // Trigger waveform generation
+                this.generateWaveform(buffer);
+            });
+        });
+        
+        // Sample parameters
+        this.addCommand(\setLoopPoints, "ff", { arg msg;
+            var loopStart = msg[1].asFloat;
+            var loopEnd = msg[2].asFloat;
+            8.do({ arg i;
+                synths[i].set(\loopStart, loopStart, \loopEnd, loopEnd);
+            });
+        });
+        
+        this.addCommand(\setSpeed, "f", { arg msg;
+            var speed = msg[1].asFloat;
+            8.do({ arg i;
+                synths[i].set(\speed, speed);
+            });
+        });
+        
+        this.addCommand(\setReverse, "i", { arg msg;
+            var reverse = msg[1].asInteger;
+            8.do({ arg i;
+                synths[i].set(\reverse, reverse);
+            });
+        });
+        
+        // Per-voice filter
+        this.addCommand(\setVoiceFilterOffset, "if", { arg msg;
+            var voice = msg[1].asInteger;
+            var offset = msg[2].asFloat;
+            if(voice >= 0 and: { voice < 8 }, {
+                synths[voice].set(\filterOffset, offset);
+            });
+        });
+        
+        // Master filter
+        this.addCommand(\setMasterFilter, "ffi", { arg msg;
+            var cutoff = msg[1].asFloat;
+            var resonance = msg[2].asFloat;
+            var filterType = msg[3].asInteger;
+            filterGroup.set(\cutoff, cutoff, \resonance, resonance, \filterType, filterType);
+        });
+        
+        this.addCommand(\setFilterDrive, "f", { arg msg;
+            var drive = msg[1].asFloat;
+            filterGroup.set(\drive, drive);
+        });
+        
+        // LFO control
+        this.addCommand(\setLFO, "ifff", { arg msg;
+            var lfoNum = msg[1].asInteger;
+            var rate = msg[2].asFloat;
+            var depth = msg[3].asFloat;
+            var shape = msg[4].asFloat;
+            if(lfoNum >= 0 and: { lfoNum < 3 }, {
+                lfos[lfoNum].set(\rate, rate, \depth, depth, \shape, shape);
+            });
+        });
+        
+        // Voice parameters
+        this.addCommand(\setVoiceAmp, "if", { arg msg;
+            var voice = msg[1].asInteger;
+            var amp = msg[2].asFloat;
+            if(voice >= 0 and: { voice < 8 }, {
+                synths[voice].set(\amp, amp);
+            });
+        });
+        
+        this.addCommand(\setVoicePan, "if", { arg msg;
+            var voice = msg[1].asInteger;
+            var pan = msg[2].asFloat;
+            if(voice >= 0 and: { voice < 8 }, {
+                synths[voice].set(\pan, pan);
+            });
+        });
+        
+        // Voice envelope control
+        this.addCommand(\setVoiceEnvelope, "iffff", { arg msg;
+            var voice = msg[1].asInteger;
+            var attack = msg[2].asFloat;
+            var decay = msg[3].asFloat;
+            var sustain = msg[4].asFloat;
+            var release = msg[5].asFloat;
+            if(voice >= 0 and: { voice < 8 }, {
+                synths[voice].set(\attack, attack, \decay, decay, \sustain, sustain, \release, release);
+            });
+        });
+        
+        // Crossfade time control
+        this.addCommand(\setXfadeTime, "f", { arg msg;
+            var xfadeTime = msg[1].asFloat;
+            8.do({ arg i;
+                synths[i].set(\xfadeTime, xfadeTime);
+            });
+        });
+        
+        // Recording commands (placeholder - softcut would be better for actual implementation)
+        this.addCommand(\startRecording, "s", { arg msg;
+            var path = msg[1].asString;
+            postln("Recording start requested: " ++ path);
+            // TODO: Implement with softcut or RecordBuf
+        });
+        
+        this.addCommand(\stopRecording, "", { arg msg;
+            postln("Recording stop requested");
+            // TODO: Implement recording stop
+        });
+        
+        // Input monitoring commands
+        this.addCommand(\startInputMonitor, "", { arg msg;
+            // Free existing monitor if any
+            if(monitorSynth.notNil, {
+                monitorSynth.free;
+            });
+            
+            // Start new monitoring synth
+            monitorSynth = Synth(\inputMonitor, [
+                \out, context.out_b
+            ], masterGroup);
+            
+            postln("Input monitoring started");
+        });
+        
+        this.addCommand(\stopInputMonitor, "", { arg msg;
+            // Free monitor synth
+            if(monitorSynth.notNil, {
+                monitorSynth.free;
+                monitorSynth = nil;
+            });
+            postln("Input monitoring stopped");
+        });
+    }
+    
+    // Generate waveform data for display (method defined OUTSIDE addCommands)
+    generateWaveform { arg buf;
+        var numSamples = 128; // Display resolution
+        var step, peaks;
+        
+        if(buf.numFrames > 0, {
+            step = buf.numFrames / numSamples;
+            
+            // Read buffer and find peaks for each display segment
+            buf.loadToFloatArray(action: { arg array;
+                var waveform, maxPeak, normalizedWaveform;
+                
+                // Calculate raw peaks for each segment
+                waveform = Array.fill(numSamples, { arg i;
+                    var startIdx = (i * step).asInteger;
+                    var endIdx = ((i + 1) * step).asInteger.min(array.size - 1);
+                    var segment = array[startIdx..endIdx];
+                    var peak = segment.abs.maxItem ? 0;
+                    peak;
+                });
+                
+                // Find maximum peak across all segments
+                maxPeak = waveform.maxItem;
+                
+                // Normalize to 0-1 range (avoid divide by zero)
+                if(maxPeak > 0, {
+                    normalizedWaveform = waveform / maxPeak;
+                }, {
+                    normalizedWaveform = waveform;  // Silent sample, keep as-is
+                });
+                
+                // Send normalized waveform data to Lua via OSC
+                NetAddr("localhost", 10111).sendMsg('/waveform', *normalizedWaveform);
+                postln("Waveform data sent: " ++ numSamples ++ " points (peak: " ++ maxPeak ++ ")");
+            });
+        });
+    }
+    
+    free {
+        synths.do(_.free);
+        lfos.do(_.free);
+        voiceGroup.free;
+        filterGroup.free;
+        masterGroup.free;
+        buffer.free;
+        voiceBus.free;
+    }
+}
