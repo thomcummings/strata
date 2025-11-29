@@ -71,10 +71,15 @@ local state = {
     master_filter_type = 0,
     filter_drive = 1.0,
 
-    -- Reverb parameters
-    reverb_mix = 0.0,      -- 0.0 to 1.0 (wet/dry blend)
-    reverb_time = 2.0,     -- 0.1 to 10.0 seconds
-    reverb_damping = 0.5,  -- 0.0 to 1.0 (high freq damping)
+    -- Reverb parameters (Greyhole)
+    reverb_mix = 0.0,        -- 0.0 to 1.0 (wet/dry blend)
+    reverb_time = 2.0,       -- 0.1 to 10.0 seconds (mapped to delayTime)
+    reverb_size = 2.0,       -- 0.5 to 5.0 (room size)
+    reverb_damping = 0.5,    -- 0.0 to 1.0 (high freq damping)
+    reverb_feedback = 0.9,   -- 0.0 to 1.0 (reverb tail length)
+    reverb_diff = 0.7,       -- 0.0 to 1.0 (diffusion/smoothness)
+    reverb_mod_depth = 0.2,  -- 0.0 to 1.0 (modulation depth)
+    reverb_mod_freq = 0.5,   -- 0.1 to 10.0 (modulation frequency)
 
     -- LFO parameters
     lfo_count = 3,  -- Can increase this later
@@ -126,12 +131,20 @@ local state = {
         {name = "Smp Length", has_param = false},
         {name = "Smp Speed", has_param = false},
         {name = "Smp XFade", has_param = false},
-        {name = "Smp Gain", has_param = false}, 
+        {name = "Smp Gain", has_param = false},
         {name = "Env Attack", has_param = false},
         {name = "Env Decay", has_param = false},
         {name = "Env Sustain", has_param = false},
         {name = "Env Release", has_param = false},
-        {name = "Octave", has_param = false}
+        {name = "Octave", has_param = false},
+        {name = "Rvb Mix", has_param = false},
+        {name = "Rvb Time", has_param = false},
+        {name = "Rvb Size", has_param = false},
+        {name = "Rvb Damping", has_param = false},
+        {name = "Rvb Feedback", has_param = false},
+        {name = "Rvb Diff", has_param = false},
+        {name = "Rvb ModDepth", has_param = false},
+        {name = "Rvb ModFreq", has_param = false}
     },
     
     -- LFO shape names
@@ -407,12 +420,53 @@ function apply_lfo_modulation()
             local base = state.octave_offset
             local mod_octave = math.floor((mod_amount * 2) + 0.5)  -- Rounds to nearest integer
             local new_octave = util.clamp(base + mod_octave, -2, 2)
-            
+
             -- Only update if octave changed
             if new_octave ~= state.octave_offset then
                 state.octave_offset = new_octave
                 update_all_notes()
             end
+
+        -- Reverb parameters
+        elseif dest.name == "Rvb Mix" then
+            local base = state.reverb_mix
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbMix(new_val)
+
+        elseif dest.name == "Rvb Time" then
+            local base = state.reverb_time
+            local new_val = util.clamp(base + (mod_amount * 5.0), 0.1, 10.0)
+            engine.setReverbTime(new_val)
+
+        elseif dest.name == "Rvb Size" then
+            local base = state.reverb_size
+            local new_val = util.clamp(base + (mod_amount * 2.0), 0.5, 5.0)
+            engine.setReverbSize(new_val)
+
+        elseif dest.name == "Rvb Damping" then
+            local base = state.reverb_damping
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbDamping(new_val)
+
+        elseif dest.name == "Rvb Feedback" then
+            local base = state.reverb_feedback
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbFeedback(new_val)
+
+        elseif dest.name == "Rvb Diff" then
+            local base = state.reverb_diff
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbDiff(new_val)
+
+        elseif dest.name == "Rvb ModDepth" then
+            local base = state.reverb_mod_depth
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbModDepth(new_val)
+
+        elseif dest.name == "Rvb ModFreq" then
+            local base = state.reverb_mod_freq
+            local new_val = util.clamp(base + (mod_amount * 5.0), 0.1, 10.0)
+            engine.setReverbModFreq(new_val)
         end
         
         ::continue::
@@ -904,7 +958,12 @@ function save_scene(slot)
         -- Reverb
         reverb_mix = state.reverb_mix,
         reverb_time = state.reverb_time,
+        reverb_size = state.reverb_size,
         reverb_damping = state.reverb_damping,
+        reverb_feedback = state.reverb_feedback,
+        reverb_diff = state.reverb_diff,
+        reverb_mod_depth = state.reverb_mod_depth,
+        reverb_mod_freq = state.reverb_mod_freq,
 
         -- LFO (placeholder for future)
         lfos = {
@@ -1016,7 +1075,12 @@ function load_scene(slot)
     -- Load reverb (with defaults for backward compatibility)
     state.reverb_mix = scene.reverb_mix or 0.0
     state.reverb_time = scene.reverb_time or 2.0
+    state.reverb_size = scene.reverb_size or 2.0
     state.reverb_damping = scene.reverb_damping or 0.5
+    state.reverb_feedback = scene.reverb_feedback or 0.9
+    state.reverb_diff = scene.reverb_diff or 0.7
+    state.reverb_mod_depth = scene.reverb_mod_depth or 0.2
+    state.reverb_mod_freq = scene.reverb_mod_freq or 0.5
 
     -- Load LFO (placeholder)
     state.lfos[1].rate = scene.lfos[1].rate
@@ -1057,7 +1121,12 @@ function load_scene(slot)
     -- Apply reverb settings
     engine.setReverbMix(state.reverb_mix)
     engine.setReverbTime(state.reverb_time)
+    engine.setReverbSize(state.reverb_size)
     engine.setReverbDamping(state.reverb_damping)
+    engine.setReverbFeedback(state.reverb_feedback)
+    engine.setReverbDiff(state.reverb_diff)
+    engine.setReverbModDepth(state.reverb_mod_depth)
+    engine.setReverbModFreq(state.reverb_mod_freq)
 
     for i = 0, state.num_faders - 1 do
         engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
@@ -1161,7 +1230,12 @@ function init()
         -- Set reverb parameters
         engine.setReverbMix(state.reverb_mix)
         engine.setReverbTime(state.reverb_time)
+        engine.setReverbSize(state.reverb_size)
         engine.setReverbDamping(state.reverb_damping)
+        engine.setReverbFeedback(state.reverb_feedback)
+        engine.setReverbDiff(state.reverb_diff)
+        engine.setReverbModDepth(state.reverb_mod_depth)
+        engine.setReverbModFreq(state.reverb_mod_freq)
 
         -- Set envelope for all voices
         for i = 0, state.num_faders - 1 do
@@ -1920,7 +1994,7 @@ function enc(n, delta)
     elseif state.current_page == 7 then
         -- FX page (reverb)
         if n == 2 then
-            state.selected_param = util.wrap(state.selected_param + delta, 1, 3)
+            state.selected_param = util.wrap(state.selected_param + delta, 1, 8)
         elseif n == 3 then
             if state.selected_param == 1 then
                 -- Reverb Mix (1% increments)
@@ -1931,9 +2005,29 @@ function enc(n, delta)
                 state.reverb_time = util.clamp(state.reverb_time + (delta * 0.1), 0.1, 10.0)
                 engine.setReverbTime(state.reverb_time)
             elseif state.selected_param == 3 then
+                -- Reverb Size
+                state.reverb_size = util.clamp(state.reverb_size + (delta * 0.1), 0.5, 5.0)
+                engine.setReverbSize(state.reverb_size)
+            elseif state.selected_param == 4 then
                 -- Reverb Damping (1% increments)
                 state.reverb_damping = util.clamp(state.reverb_damping + (delta * 0.01), 0.0, 1.0)
                 engine.setReverbDamping(state.reverb_damping)
+            elseif state.selected_param == 5 then
+                -- Reverb Feedback (1% increments)
+                state.reverb_feedback = util.clamp(state.reverb_feedback + (delta * 0.01), 0.0, 1.0)
+                engine.setReverbFeedback(state.reverb_feedback)
+            elseif state.selected_param == 6 then
+                -- Reverb Diffusion (1% increments)
+                state.reverb_diff = util.clamp(state.reverb_diff + (delta * 0.01), 0.0, 1.0)
+                engine.setReverbDiff(state.reverb_diff)
+            elseif state.selected_param == 7 then
+                -- Reverb Mod Depth (1% increments)
+                state.reverb_mod_depth = util.clamp(state.reverb_mod_depth + (delta * 0.01), 0.0, 1.0)
+                engine.setReverbModDepth(state.reverb_mod_depth)
+            elseif state.selected_param == 8 then
+                -- Reverb Mod Freq
+                state.reverb_mod_freq = util.clamp(state.reverb_mod_freq + (delta * 0.1), 0.1, 10.0)
+                engine.setReverbModFreq(state.reverb_mod_freq)
             end
         end
 
@@ -2798,23 +2892,45 @@ function draw_fx_page()
 
     -- Title
     screen.move(4, 10)
-    screen.text("FX - REVERB")
+    screen.text("FX - REVERB (GREYHOLE)")
 
-    -- Draw parameters
-    local params = {"Mix", "Time", "Damping"}
-    for i = 1, 3 do
-        local y = 20 + (i * 10)
-        screen.level(state.selected_param == i and 15 or 6)
-        screen.move(4, y)
-        screen.text(params[i] .. ":")
+    -- Draw parameters with scrolling
+    local params = {"Mix", "Time", "Size", "Damping", "Feedback", "Diffusion", "Mod Depth", "Mod Freq"}
+    local param_start_y = 18
+    local param_spacing = 7
+    local visible_params = 5
 
-        screen.move(60, y)
-        if i == 1 then
-            screen.text(string.format("%d%%", math.floor(state.reverb_mix * 100)))
-        elseif i == 2 then
-            screen.text(string.format("%.1fs", state.reverb_time))
-        elseif i == 3 then
-            screen.text(string.format("%d%%", math.floor(state.reverb_damping * 100)))
+    local scroll_offset = 0
+    if state.selected_param > visible_params then
+        scroll_offset = -(state.selected_param - visible_params) * param_spacing
+    end
+
+    for i = 1, 8 do
+        local y = param_start_y + (i * param_spacing) + scroll_offset
+
+        if y > 16 and y < 64 then
+            screen.level(state.selected_param == i and 15 or 6)
+            screen.move(4, y)
+            screen.text(params[i] .. ":")
+
+            screen.move(70, y)
+            if i == 1 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_mix * 100)))
+            elseif i == 2 then
+                screen.text(string.format("%.1fs", state.reverb_time))
+            elseif i == 3 then
+                screen.text(string.format("%.1f", state.reverb_size))
+            elseif i == 4 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_damping * 100)))
+            elseif i == 5 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_feedback * 100)))
+            elseif i == 6 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_diff * 100)))
+            elseif i == 7 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_mod_depth * 100)))
+            elseif i == 8 then
+                screen.text(string.format("%.1fHz", state.reverb_mod_freq))
+            end
         end
     end
 end
