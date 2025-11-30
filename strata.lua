@@ -58,6 +58,7 @@ local state = {
     env_decay = 0.1,
     env_sustain = 1.0,
     env_release = 0.2,
+    env_filter_mod = 0.0,  -- 0.0 to 1.0 (0% to 100% of 10kHz range)
     
     -- Scale parameters
     current_scale = "Major",
@@ -222,6 +223,12 @@ local state = {
     
     -- Gate threshold
     gate_threshold = 0.01,
+
+    -- MIDI keyboard support (chromatic, background, no velocity)
+    keyboard = {
+        next_voice = 0,  -- Round-robin voice allocation (0-7)
+        active_notes = {}  -- Maps MIDI note number to voice index
+    },
 }
 
 -- Initialize fader states
@@ -942,6 +949,7 @@ function save_scene(slot)
         env_decay = state.env_decay,
         env_sustain = state.env_sustain,
         env_release = state.env_release,
+        env_filter_mod = state.env_filter_mod,
         
         -- Scale
         current_scale = state.current_scale,
@@ -1059,6 +1067,7 @@ function load_scene(slot)
     state.env_decay = scene.env_decay
     state.env_sustain = scene.env_sustain
     state.env_release = scene.env_release
+    state.env_filter_mod = scene.env_filter_mod or 0.0
     
     -- Load scale
     state.current_scale = scene.current_scale
@@ -1131,7 +1140,10 @@ function load_scene(slot)
     for i = 0, state.num_faders - 1 do
         engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
     end
-    
+
+    -- Apply envelope filter modulation
+    engine.setEnvFilterMod(state.env_filter_mod)
+
     -- Update any active notes with new scale
     update_all_notes()
     
@@ -1194,6 +1206,8 @@ function init()
     MidiHandler.on_filter_cutoff = handle_filter_cutoff
     MidiHandler.on_filter_resonance = handle_filter_resonance
     MidiHandler.on_voice_filter_offset = handle_voice_filter_offset
+    MidiHandler.on_note_on = handle_note_on
+    MidiHandler.on_note_off = handle_note_off
     
     -- Set up OSC receiver for waveform data, sample duration, and input levels
     osc.event = function(path, args, from)
@@ -1207,11 +1221,9 @@ function init()
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
         elseif path == "/input_levels" then
             if state.recording then
-                -- args[3] and args[4] contain the values (SendReply adds node ID and reply ID first)
-                state.recording_level_l = math.min(args[3] or 0, 1.0)
-                state.recording_level_r = math.min(args[4] or 0, 1.0)
-                print("Levels: L=" .. string.format("%.2f", state.recording_level_l) .. 
-                      " R=" .. string.format("%.2f", state.recording_level_r))  -- DEBUG
+                -- SendReply sends values directly in args[1] and args[2]
+                state.recording_level_l = math.min(args[1] or 0, 1.0)
+                state.recording_level_r = math.min(args[2] or 0, 1.0)
             end
         end
     end
@@ -1241,7 +1253,10 @@ function init()
         for i = 0, state.num_faders - 1 do
             engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
         end
-        
+
+        -- Set envelope filter modulation
+        engine.setEnvFilterMod(state.env_filter_mod)
+
         print("Strata v1.2 ready")
         print("MIDI channel: " .. MidiHandler.midi_channel)
         print("Fader CCs: " .. MidiHandler.fader_cc_start .. "-" .. (MidiHandler.fader_cc_start + 7))
@@ -1456,8 +1471,63 @@ end
 function release_note(fader_idx)
     local fader = state.faders[fader_idx]
     fader.active = false
-    
+
     engine.noteOff(fader_idx)
+end
+
+-- MIDI Keyboard handlers (chromatic, always-on, no velocity)
+function handle_note_on(note, vel)
+    -- Ignore during recording
+    if state.recording then
+        return
+    end
+
+    -- Check if note is already playing
+    if state.keyboard.active_notes[note] then
+        return  -- Already playing this note
+    end
+
+    -- Allocate next voice (round-robin)
+    local voice = state.keyboard.next_voice
+
+    -- If this voice is already playing a keyboard note, release it
+    for midi_note, voice_idx in pairs(state.keyboard.active_notes) do
+        if voice_idx == voice then
+            state.keyboard.active_notes[midi_note] = nil
+            break
+        end
+    end
+
+    -- Calculate chromatic frequency (MIDI note to Hz)
+    -- A4 (MIDI 69) = 440 Hz
+    local freq = 440 * math.pow(2, (note - 69) / 12)
+
+    -- Track this note
+    state.keyboard.active_notes[note] = voice
+
+    -- Advance to next voice (round-robin 0-7)
+    state.keyboard.next_voice = (voice + 1) % 8
+
+    -- Trigger note on engine (no velocity, full position)
+    engine.noteOn(voice, freq)
+    engine.setFaderPos(voice, 1.0)  -- Full velocity (no velocity sensitivity)
+end
+
+function handle_note_off(note, vel)
+    -- Ignore during recording
+    if state.recording then
+        return
+    end
+
+    -- Find which voice is playing this note
+    local voice = state.keyboard.active_notes[note]
+    if voice then
+        -- Release the note
+        engine.noteOff(voice)
+
+        -- Remove from active notes
+        state.keyboard.active_notes[note] = nil
+    end
 end
 
 -- Load a sample
@@ -1504,12 +1574,17 @@ function start_recording()
     state.recording_level_l = 0
     state.recording_level_r = 0
     
-    local timestamp = os.date("%Y%m%d_%H%M%S")
-    local filename = timestamp .. "_strata_rec.wav"  
-    local path = _path.audio .. "strata/" .. filename
-    
+    -- Create date-organized folder structure
+    local date_folder = os.date("%Y%m%d")
+    local timestamp = os.date("%H%M%S")
+    local filename = timestamp .. "_strata_rec.wav"
+    local folder_path = _path.audio .. "strata/" .. date_folder .. "/"
+    local path = folder_path .. filename
+
+    -- Create both base and date folders
     util.make_dir(_path.audio .. "strata/")
-    
+    util.make_dir(folder_path)
+
     state.recording_path = path
     
     -- Simple stereo recording setup
@@ -1957,7 +2032,7 @@ function enc(n, delta)
     elseif state.current_page == 5 then
         -- ENVELOPE page
         if n == 2 then
-            state.selected_param = util.wrap(state.selected_param + delta, 1, 4)
+            state.selected_param = util.wrap(state.selected_param + delta, 1, 5)
         elseif n == 3 then
             if state.selected_param == 1 then
                 state.env_attack = util.clamp(state.env_attack + (delta * 0.01), 0.001, 2.0)
@@ -1967,10 +2042,16 @@ function enc(n, delta)
                 state.env_sustain = util.clamp(state.env_sustain + (delta * 0.05), 0, 1.0)
             elseif state.selected_param == 4 then
                 state.env_release = util.clamp(state.env_release + (delta * 0.05), 0.01, 5.0)
+            elseif state.selected_param == 5 then
+                state.env_filter_mod = util.clamp(state.env_filter_mod + (delta * 0.01), 0.0, 1.0)
+                engine.setEnvFilterMod(state.env_filter_mod)
             end
 
-            for i = 0, state.num_faders - 1 do
-                engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
+            -- Update envelope for ADSR parameters
+            if state.selected_param <= 4 then
+                for i = 0, state.num_faders - 1 do
+                    engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
+                end
             end
         end
         
@@ -2840,11 +2921,11 @@ function draw_sequencer_page()
 end
 
 function draw_envelope_page()
-    -- Draw envelope visualization (larger, centered)
+    -- Draw envelope visualization (adjusted height to make room for 5th param)
     local env_x = 14
-    local env_y = 50
+    local env_y = 45
     local env_width = 100
-    local env_height = -30
+    local env_height = -25
 
     local total_time = state.env_attack + state.env_decay + 0.2 + state.env_release
     local a_width = (state.env_attack / total_time) * env_width
@@ -2860,7 +2941,7 @@ function draw_envelope_page()
     screen.line(env_x + a_width + d_width + s_width + r_width, env_y)
     screen.stroke()
 
-    -- Draw parameters horizontally at bottom with units
+    -- Draw ADSR parameters horizontally
     local params = {
         {label = "A", value = string.format("%.2fs", state.env_attack), x = 0},
         {label = "D", value = string.format("%.2fs", state.env_decay), x = 32},
@@ -2873,17 +2954,33 @@ function draw_envelope_page()
         local is_selected = (state.selected_param == i)
 
         screen.level(is_selected and 15 or 8)
-        screen.move(param.x, 60)
+        screen.move(param.x, 55)
         screen.text(param.label .. ": " .. param.value)
 
         -- Draw selection indicator (underline)
         if is_selected then
             screen.level(15)
             local text_width = #(param.label .. ": " .. param.value) * 4
-            screen.move(param.x, 62)
-            screen.line(param.x + text_width, 62)
+            screen.move(param.x, 57)
+            screen.line(param.x + text_width, 57)
             screen.stroke()
         end
+    end
+
+    -- Draw filter modulation parameter below ADSR
+    local filter_mod_percent = math.floor(state.env_filter_mod * 100)
+    local is_selected = (state.selected_param == 5)
+
+    screen.level(is_selected and 15 or 8)
+    screen.move(0, 63)
+    screen.text("Filter Mod: " .. filter_mod_percent .. "%")
+
+    if is_selected then
+        screen.level(15)
+        local text_width = #("Filter Mod: " .. filter_mod_percent .. "%") * 4
+        screen.move(0, 65)
+        screen.line(text_width, 65)
+        screen.stroke()
     end
 end
 
