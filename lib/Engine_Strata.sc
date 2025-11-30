@@ -9,6 +9,8 @@ Engine_Strata : CroneEngine {
     var <masterGroup;
     var <lfos;
     var <monitorSynth;
+    var <monitorBus;
+    var <monitorPoll;
     var <reverbSynth;
     var voiceBus;
     var filterBus;
@@ -21,6 +23,7 @@ Engine_Strata : CroneEngine {
         // Allocate audio buses for signal routing
         voiceBus = Bus.audio(context.server, 2);    // voices → filter
         filterBus = Bus.audio(context.server, 2);   // filter → reverb
+        monitorBus = Bus.control(context.server, 2); // input monitor levels (L, R)
 
         // Allocate buffer for sample (30 seconds stereo at 48kHz)
         buffer = Buffer.alloc(context.server, 48000 * 30, 2);
@@ -246,7 +249,7 @@ Engine_Strata : CroneEngine {
         
         // Input monitoring SynthDef for recording VU meters
         SynthDef(\inputMonitor, {
-            arg out=0;
+            arg out=0, poll_rate=30;
             var input, peak_l, peak_r;
 
             // Read stereo input
@@ -256,10 +259,8 @@ Engine_Strata : CroneEngine {
             peak_l = Amplitude.kr(input[0], 0.005, 0.05);
             peak_r = Amplitude.kr(input[1], 0.005, 0.05);
 
-            // Send via SendReply at 30Hz for smooth metering
-            // Note: SendReply sends [nodeID, replyID, value1, value2...]
-            // But with a custom cmdName, it sends just [value1, value2...]
-            SendReply.kr(Impulse.kr(30), '/input_levels', [peak_l, peak_r]);
+            // Output to control bus for polling
+            Out.kr(out, [peak_l, peak_r]);
         }).add;
     }
     
@@ -295,10 +296,12 @@ Engine_Strata : CroneEngine {
             postln("Engine loading sample: " ++ path);
             buffer.allocRead(path, completionMessage: {
                 var duration = buffer.numFrames / context.server.sampleRate;
-                
-                postln("Sample loaded: " ++ path ++ " frames=" ++ buffer.numFrames);
-                postln("Duration: " ++ duration ++ " seconds");
-                
+                var channels = buffer.numChannels;
+
+                postln("Sample loaded: " ++ path);
+                postln("  Frames: " ++ buffer.numFrames ++ " | Channels: " ++ channels ++ " | Duration: " ++ duration ++ "s");
+                postln("  Mono->Stereo conversion: " ++ if(channels == 1, {"ACTIVE"}, {"not needed"}));
+
                 // Send duration to Lua via OSC
                 context.server.addr.sendMsg("/sample_duration", duration);
                 
@@ -467,20 +470,41 @@ Engine_Strata : CroneEngine {
         
         // Input monitoring commands
         this.addCommand(\startInputMonitor, "", { arg msg;
-            // Free existing monitor if any
+            // Stop existing monitor if any
+            if(monitorPoll.notNil, {
+                monitorPoll.stop;
+                monitorPoll.free;
+            });
             if(monitorSynth.notNil, {
                 monitorSynth.free;
             });
-            
-            // Start new monitoring synth
+
+            // Start new monitoring synth (outputs to control bus)
             monitorSynth = Synth(\inputMonitor, [
-                \out, context.out_b
+                \out, monitorBus.index
             ], masterGroup);
-            
-            postln("Input monitoring started");
+
+            // Start polling the control bus and sending OSC
+            monitorPoll = Routine({
+                loop {
+                    monitorBus.get({ arg val;
+                        // val is an array [peak_l, peak_r]
+                        context.server.addr.sendMsg("/input_levels", val[0], val[1]);
+                    });
+                    (1/30).wait; // 30Hz update rate
+                };
+            }).play(SystemClock);
+
+            postln("Input monitoring started with polling");
         });
-        
+
         this.addCommand(\stopInputMonitor, "", { arg msg;
+            // Stop polling
+            if(monitorPoll.notNil, {
+                monitorPoll.stop;
+                monitorPoll.free;
+                monitorPoll = nil;
+            });
             // Free monitor synth
             if(monitorSynth.notNil, {
                 monitorSynth.free;
@@ -531,6 +555,8 @@ Engine_Strata : CroneEngine {
     free {
         synths.do(_.free);
         lfos.do(_.free);
+        if(monitorPoll.notNil, { monitorPoll.stop; monitorPoll.free; });
+        if(monitorSynth.notNil, { monitorSynth.free; });
         reverbSynth.free;
         voiceGroup.free;
         filterGroup.free;
@@ -538,5 +564,6 @@ Engine_Strata : CroneEngine {
         buffer.free;
         voiceBus.free;
         filterBus.free;
+        monitorBus.free;
     }
 }
