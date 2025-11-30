@@ -486,12 +486,13 @@ Engine_Strata : CroneEngine {
 
             // Start polling the control bus and sending OSC
             monitorPoll = Routine({
-                var levels;
+                var level_l, level_r;
                 loop {
-                    // Get values synchronously (blocks until ready)
-                    levels = monitorBus.getSynchronous;
-                    // levels is an array [peak_l, peak_r]
-                    context.server.addr.sendMsg("/input_levels", levels[0], levels[1]);
+                    // Get each channel separately (getSynchronous returns single value)
+                    level_l = monitorBus.subBus(0, 1).getSynchronous;
+                    level_r = monitorBus.subBus(1, 1).getSynchronous;
+                    // Send as separate values
+                    context.server.addr.sendMsg("/input_levels", level_l, level_r);
                     (1/30).wait; // 30Hz update rate
                 };
             }).play(SystemClock);
