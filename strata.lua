@@ -1244,6 +1244,14 @@ function init()
             state.sample_duration = args[1]
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
         elseif path == "/input_levels" then
+            -- Debug: show all args to verify format
+            if state.recording then
+                print("OSC /input_levels: args=" .. #args)
+                for i = 1, math.min(#args, 6) do
+                    print("  [" .. i .. "]=" .. string.format("%.3f", args[i] or 0))
+                end
+            end
+
             -- SendPeakRMS format: [replyID, nodeID, peak_l, peak_r, rms_l, rms_r]
             if state.recording then
                 state.recording_level_l = math.min(args[3] or 0, 1.0)  -- peak_l
@@ -1251,6 +1259,10 @@ function init()
                 -- Track peak levels to detect mono recording
                 state.recording_peak_l = math.max(state.recording_peak_l, state.recording_level_l)
                 state.recording_peak_r = math.max(state.recording_peak_r, state.recording_level_r)
+                if state.recording_peak_l > 0.01 or state.recording_peak_r > 0.01 then
+                    print("Peaks: L=" .. string.format("%.3f", state.recording_peak_l) ..
+                          " R=" .. string.format("%.3f", state.recording_peak_r))
+                end
             end
         end
     end
@@ -1936,8 +1948,10 @@ function enc(n, delta)
             engine.setLoopPoints(state.loop_start, calculate_loop_end())
             
         elseif state.selected_param == 2 then
-            -- Length (existing code)
-            local new_length = state.loop_length + (delta * 0.001)
+            -- Length with adaptive step size
+            -- Use smaller steps (<1s) for fine control, larger steps (>1s) for speed
+            local step_size = state.loop_length < 1.0 and 0.001 or 0.05
+            local new_length = state.loop_length + (delta * step_size)
             local max_length = (1.0 - state.loop_start) * state.sample_duration
             state.loop_length = util.clamp(new_length, 0.001, max_length)
             engine.setLoopPoints(state.loop_start, calculate_loop_end())
