@@ -237,18 +237,51 @@ Engine_Strata : CroneEngine {
         // Sample loading
         this.addCommand(\loadSample, "s", { arg msg;
             var path = msg[1].asString;
+            var tmpBuf;
+
             postln("Engine loading sample: " ++ path);
-            buffer.allocRead(path, completionMessage: {
-                var duration = buffer.numFrames / context.server.sampleRate;
-                
-                postln("Sample loaded: " ++ path ++ " frames=" ++ buffer.numFrames);
-                postln("Duration: " ++ duration ++ " seconds");
-                
-                // Send duration to Lua via OSC
-                context.server.addr.sendMsg("/sample_duration", duration);
-                
-                // Trigger waveform generation
-                this.generateWaveform(buffer);
+
+            // Load into temporary buffer to check channel count
+            tmpBuf = Buffer.read(context.server, path, action: { arg tmpBuffer;
+                var numChannels = tmpBuffer.numChannels;
+                var numFrames = tmpBuffer.numFrames;
+                var duration = numFrames / context.server.sampleRate;
+
+                postln("Sample loaded: " ++ path);
+                postln("  Frames: " ++ numFrames ++ " | Channels: " ++ numChannels ++ " | Duration: " ++ duration ++ "s");
+
+                // Always ensure buffer is stereo
+                if(numChannels == 1, {
+                    // MONO: Convert to stereo by duplicating the mono channel
+                    postln("  Mono->Stereo conversion: duplicating channel");
+
+                    // Allocate stereo buffer with same frame count
+                    buffer.alloc(numFrames, 2, {
+                        // Copy mono data to both channels using copyData
+                        buffer.copyData(tmpBuffer, dstStartAt: 0, srcStartAt: 0, numSamples: numFrames);
+                        buffer.copyData(tmpBuffer, dstStartAt: numFrames, srcStartAt: 0, numSamples: numFrames);
+
+                        tmpBuffer.free; // Free temp buffer
+
+                        // Send duration and waveform
+                        context.server.addr.sendMsg("/sample_duration", duration);
+                        this.generateWaveform(buffer);
+                    });
+                }, {
+                    // STEREO: Direct copy
+                    postln("  Mono->Stereo conversion: not needed");
+
+                    buffer.alloc(numFrames, 2, {
+                        // Copy all stereo data
+                        buffer.copyData(tmpBuffer, dstStartAt: 0, srcStartAt: 0, numSamples: numFrames * 2);
+
+                        tmpBuffer.free; // Free temp buffer
+
+                        // Send duration and waveform
+                        context.server.addr.sendMsg("/sample_duration", duration);
+                        this.generateWaveform(buffer);
+                    });
+                });
             });
         });
         
