@@ -89,12 +89,13 @@ Engine_Strata : CroneEngine {
     loadSynthDefs {
         // Voice SynthDef - plays pitched sample with gating
         SynthDef(\faderVoice, {
-            arg out=0, bufnum=0, 
+            arg out=0, bufnum=0,
                 gate=0, freq=440, amp=0.8, pan=0,
                 loopStart=0, loopEnd=1, speed=1.0, reverse=0,
                 faderPos=0,
                 filterCutoff=20000, filterRes=0.1, filterOffset=0,
                 attack=0.001, decay=0.1, sustain=0.7, release=0.2,
+                envFilterMod=0,
                 xfadeTime=0.1;
             
             var sig, env, playhead, startFrame, endFrame, bufFrames, playRate;
@@ -158,8 +159,8 @@ Engine_Strata : CroneEngine {
             // Apply envelope, fader position, and amp
             sig = sig * env * amp * faderPos.lag(0.002);
             
-            // Per-voice filter
-            filterFreq = (filterCutoff + filterOffset).clip(20, 20000);
+            // Per-voice filter with envelope modulation
+            filterFreq = (filterCutoff + filterOffset + (env * envFilterMod)).clip(20, 20000);
             localFilter = RLPF.ar(sig, filterFreq, filterRes.linlin(0, 1, 1, 0.1));
             
             // Pan
@@ -430,6 +431,15 @@ Engine_Strata : CroneEngine {
             var release = msg[5].asFloat;
             if(voice >= 0 and: { voice < 8 }, {
                 synths[voice].set(\attack, attack, \decay, decay, \sustain, sustain, \release, release);
+            });
+        });
+
+        // Envelope to filter modulation
+        this.addCommand(\setEnvFilterMod, "f", { arg msg;
+            var envFilterMod = msg[1].asFloat.clip(0.0, 1.0);
+            // Apply to all voices
+            8.do({ arg i;
+                synths[i].set(\envFilterMod, envFilterMod * 10000);  // 0-10kHz range
             });
         });
         
