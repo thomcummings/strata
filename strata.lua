@@ -1222,8 +1222,12 @@ function init()
         elseif path == "/input_levels" then
             if state.recording then
                 -- SendReply sends values directly in args[1] and args[2]
-                state.recording_level_l = math.min(args[1] or 0, 1.0)
-                state.recording_level_r = math.min(args[2] or 0, 1.0)
+                local level_l = args[1] or 0
+                local level_r = args[2] or 0
+                state.recording_level_l = math.min(level_l, 1.0)
+                state.recording_level_r = math.min(level_r, 1.0)
+                -- Debug: uncomment to see values
+                -- print("VU: L=" .. string.format("%.3f", level_l) .. " R=" .. string.format("%.3f", level_r))
             end
         end
     end
