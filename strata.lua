@@ -1227,7 +1227,7 @@ function init()
                 state.recording_level_l = math.min(level_l, 1.0)
                 state.recording_level_r = math.min(level_r, 1.0)
                 -- Debug: uncomment to see values
-                -- print("VU: L=" .. string.format("%.3f", level_l) .. " R=" .. string.format("%.3f", level_r))
+                 print("VU: L=" .. string.format("%.3f", level_l) .. " R=" .. string.format("%.3f", level_r))
             end
         end
     end
