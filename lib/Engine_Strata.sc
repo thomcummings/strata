@@ -289,30 +289,30 @@ Engine_Strata : CroneEngine {
         // Sample loading with mono-to-stereo conversion
         this.addCommand(\loadSample, "s", { arg msg;
             var path = msg[1].asString;
-            var sf, numChannels;
+            var sf, numChannels, fileFrames, fileDuration;
 
             postln("Engine loading sample: " ++ path);
 
-            // Read soundfile header to check channel count
+            // Read soundfile header to check channel count and duration
             sf = SoundFile.new;
             if(sf.openRead(path), {
                 numChannels = sf.numChannels;
+                fileFrames = sf.numFrames;
+                fileDuration = fileFrames / sf.sampleRate;
                 sf.close;
 
-                postln("Sample channels: " ++ numChannels);
+                postln("Sample info: " ++ numChannels ++ " channels, " ++ fileFrames ++ " frames, " ++ fileDuration ++ "s");
 
                 // Handle mono files by converting to stereo
                 if(numChannels == 1, {
                     postln("Converting mono to stereo...");
-                    // Load mono file into both channels of stereo buffer
-                    buffer.readChannel(path, channels: [0, 0], action: {
-                        var duration = buffer.numFrames / context.server.sampleRate;
-
+                    // Use allocReadChannel to reallocate buffer to file size
+                    buffer.allocReadChannel(path, 0, -1, [0, 0], {
                         postln("Mono sample converted and loaded: " ++ path);
-                        postln("Frames=" ++ buffer.numFrames ++ " Duration=" ++ duration ++ "s");
+                        postln("Buffer frames=" ++ buffer.numFrames ++ " Duration=" ++ fileDuration ++ "s");
 
-                        // Send duration to Lua via OSC (use norns OSC port)
-                        NetAddr("localhost", 10111).sendMsg("/sample_duration", duration);
+                        // Send actual file duration to Lua via OSC
+                        NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
 
                         // Trigger waveform generation
                         this.generateWaveform(buffer);
@@ -321,13 +321,11 @@ Engine_Strata : CroneEngine {
                     // Load stereo file normally
                     postln("Loading stereo file...");
                     buffer.allocRead(path, completionMessage: {
-                        var duration = buffer.numFrames / context.server.sampleRate;
-
                         postln("Stereo sample loaded: " ++ path);
-                        postln("Frames=" ++ buffer.numFrames ++ " Duration=" ++ duration ++ "s");
+                        postln("Buffer frames=" ++ buffer.numFrames ++ " Duration=" ++ fileDuration ++ "s");
 
-                        // Send duration to Lua via OSC (use norns OSC port)
-                        NetAddr("localhost", 10111).sendMsg("/sample_duration", duration);
+                        // Send actual file duration to Lua via OSC
+                        NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
 
                         // Trigger waveform generation
                         this.generateWaveform(buffer);
