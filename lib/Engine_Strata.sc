@@ -311,8 +311,8 @@ Engine_Strata : CroneEngine {
                         postln("Mono sample converted and loaded: " ++ path);
                         postln("Frames=" ++ buffer.numFrames ++ " Duration=" ++ duration ++ "s");
 
-                        // Send duration to Lua via OSC
-                        context.server.addr.sendMsg("/sample_duration", duration);
+                        // Send duration to Lua via OSC (use norns OSC port)
+                        NetAddr("localhost", 10111).sendMsg("/sample_duration", duration);
 
                         // Trigger waveform generation
                         this.generateWaveform(buffer);
@@ -326,8 +326,8 @@ Engine_Strata : CroneEngine {
                         postln("Stereo sample loaded: " ++ path);
                         postln("Frames=" ++ buffer.numFrames ++ " Duration=" ++ duration ++ "s");
 
-                        // Send duration to Lua via OSC
-                        context.server.addr.sendMsg("/sample_duration", duration);
+                        // Send duration to Lua via OSC (use norns OSC port)
+                        NetAddr("localhost", 10111).sendMsg("/sample_duration", duration);
 
                         // Trigger waveform generation
                         this.generateWaveform(buffer);
