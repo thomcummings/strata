@@ -314,8 +314,8 @@ Engine_Strata : CroneEngine {
                         // Send actual file duration to Lua via OSC
                         NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
 
-                        // Trigger waveform generation
-                        this.generateWaveform(buffer);
+                        // Trigger waveform generation with actual file frames
+                        this.generateWaveform(buffer, fileFrames);
                     });
                 }, {
                     // Load stereo file normally
@@ -327,8 +327,8 @@ Engine_Strata : CroneEngine {
                         // Send actual file duration to Lua via OSC
                         NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
 
-                        // Trigger waveform generation
-                        this.generateWaveform(buffer);
+                        // Trigger waveform generation with actual file frames
+                        this.generateWaveform(buffer, fileFrames);
                     });
                 });
             }, {
@@ -518,12 +518,16 @@ Engine_Strata : CroneEngine {
     }
     
     // Generate waveform data for display (method defined OUTSIDE addCommands)
-    generateWaveform { arg buf;
+    // Pass optional numFrames to use actual file size instead of buffer size
+    generateWaveform { arg buf, numFrames;
         var numSamples = 128; // Display resolution
-        var step, peaks;
-        
-        if(buf.numFrames > 0, {
-            step = buf.numFrames / numSamples;
+        var step, peaks, framesToUse;
+
+        // Use provided numFrames or fall back to buffer size
+        framesToUse = numFrames ?? buf.numFrames;
+
+        if(framesToUse > 0, {
+            step = framesToUse / numSamples;
             
             // Read buffer and find peaks for each display segment
             buf.loadToFloatArray(action: { arg array;
