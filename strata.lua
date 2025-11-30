@@ -1,6 +1,17 @@
--- strata.lua
--- Vestax Faderboard emulation for Norns
--- v1.2 - with Pattern & Euclidean Sequencer
+-- strata
+-- 8-voice performance sampler
+-- v1.0
+--
+-- inspired by vestax faderboard
+--
+-- K2: load sample
+-- K3: start sequencer
+-- E1: change page
+-- E2/E3: adjust parameters
+--
+-- load chord packs in snapshots
+-- sequence between snapshots
+-- modulate with filters & lfos
 
 engine.name = "Strata"
 
