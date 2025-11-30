@@ -133,14 +133,14 @@ Engine_Strata : CroneEngine {
             );
 
             // Read from buffer with cubic interpolation
-            // Detect mono vs stereo and handle accordingly
-            sig = (BufChannels.kr(bufnum) == 1).if({
-                // Mono buffer: create pseudo-stereo with slight delay
+            // Handle both mono and stereo samples
+            sig = if(BufChannels.ir(bufnum) == 1, {
+                // Mono buffer: read one channel and create pseudo-stereo
                 var mono = BufRd.ar(1, bufnum, playhead, 1, 4);
-                var delayed = DelayC.ar(mono, 0.01, 0.005);  // 5ms delay on right
+                var delayed = DelayC.ar(mono, 0.02, 0.010);  // 10ms delay on right
                 [mono, delayed]
             }, {
-                // Stereo buffer: read normally
+                // Stereo buffer: read both channels normally
                 BufRd.ar(2, bufnum, playhead, 1, 4)
             });
             
@@ -248,16 +248,18 @@ Engine_Strata : CroneEngine {
         SynthDef(\inputMonitor, {
             arg out=0;
             var input, peak_l, peak_r;
-            
+
             // Read stereo input
             input = SoundIn.ar([0, 1]);
-            
-            // Measure peak levels
-            peak_l = Amplitude.kr(input[0], 0.01, 0.1);
-            peak_r = Amplitude.kr(input[1], 0.01, 0.1);
-            
-            // Send via SendReply (norns handles routing automatically)
-            SendReply.kr(Impulse.kr(20), '/input_levels', [peak_l, peak_r]);
+
+            // Measure peak levels with faster response
+            peak_l = Amplitude.kr(input[0], 0.005, 0.05);
+            peak_r = Amplitude.kr(input[1], 0.005, 0.05);
+
+            // Send via SendReply at 30Hz for smooth metering
+            // Note: SendReply sends [nodeID, replyID, value1, value2...]
+            // But with a custom cmdName, it sends just [value1, value2...]
+            SendReply.kr(Impulse.kr(30), '/input_levels', [peak_l, peak_r]);
         }).add;
     }
     
