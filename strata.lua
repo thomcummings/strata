@@ -1243,28 +1243,8 @@ function init()
         elseif path == "/sample_duration" then
             state.sample_duration = args[1]
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
-        elseif path == "/input_levels" then
-            -- Debug: show all args to verify format
-            if state.recording then
-                print("OSC /input_levels: args=" .. #args)
-                for i = 1, math.min(#args, 6) do
-                    print("  [" .. i .. "]=" .. string.format("%.3f", args[i] or 0))
-                end
-            end
-
-            -- SendPeakRMS format: [replyID, nodeID, peak_l, peak_r, rms_l, rms_r]
-            if state.recording then
-                state.recording_level_l = math.min(args[3] or 0, 1.0)  -- peak_l
-                state.recording_level_r = math.min(args[4] or 0, 1.0)  -- peak_r
-                -- Track peak levels to detect mono recording
-                state.recording_peak_l = math.max(state.recording_peak_l, state.recording_level_l)
-                state.recording_peak_r = math.max(state.recording_peak_r, state.recording_level_r)
-                if state.recording_peak_l > 0.01 or state.recording_peak_r > 0.01 then
-                    print("Peaks: L=" .. string.format("%.3f", state.recording_peak_l) ..
-                          " R=" .. string.format("%.3f", state.recording_peak_r))
-                end
-            end
         end
+        -- Note: Input levels now monitored via norns polls (see start_recording)
     end
     
     -- Wait for engine to be ready
@@ -1687,8 +1667,22 @@ function start_recording()
     state.recording_start_time = util.time()
     print("Recording start time: " .. string.format("%.3f", state.recording_start_time))
 
-    -- Start input monitoring (sends levels via OSC)
-    engine.startInputMonitor()
+    -- Poll input levels using norns audio API
+    state.recording_poll = poll.set("input_level_in_l")
+    state.recording_poll.callback = function(val)
+        state.recording_level_l = val
+        state.recording_peak_l = math.max(state.recording_peak_l, val)
+    end
+    state.recording_poll.time = 1/30  -- 30Hz
+    state.recording_poll:start()
+
+    state.recording_poll_r = poll.set("input_level_in_r")
+    state.recording_poll_r.callback = function(val)
+        state.recording_level_r = val
+        state.recording_peak_r = math.max(state.recording_peak_r, val)
+    end
+    state.recording_poll_r.time = 1/30  -- 30Hz
+    state.recording_poll_r:start()
 
     -- Timer clock for recording timeout
     state.recording_clock = clock.run(function()
@@ -1698,12 +1692,11 @@ function start_recording()
             -- Update time from start
             state.recording_time = util.time() - state.recording_start_time
 
-            -- Levels are updated via OSC from SendPeakRMS (see osc.event handler)
-            -- Peaks are tracked in the OSC handler
-
-            -- Debug: show time every second
+            -- Debug: show time and peaks every second
             if math.floor(state.recording_time) ~= math.floor(state.recording_time - 0.1) then
-                print("Recording time: " .. string.format("%.1f", state.recording_time) .. "s")
+                print("Recording time: " .. string.format("%.1f", state.recording_time) .. "s " ..
+                      "Peaks: L=" .. string.format("%.3f", state.recording_peak_l) ..
+                      " R=" .. string.format("%.3f", state.recording_peak_r))
             end
 
             if state.recording_time >= 30 then
@@ -1734,8 +1727,15 @@ function cancel_recording()
     softcut.enable(1, 0)
     softcut.enable(2, 0)
 
-    -- Stop input monitoring
-    engine.stopInputMonitor()
+    -- Stop input level polls
+    if state.recording_poll then
+        state.recording_poll:stop()
+        state.recording_poll = nil
+    end
+    if state.recording_poll_r then
+        state.recording_poll_r:stop()
+        state.recording_poll_r = nil
+    end
 
     -- Stop recording clock
     if state.recording_clock then
@@ -1766,13 +1766,20 @@ function stop_recording()
         clock.cancel(state.recording_clock)
         state.recording_clock = nil
     end
-    
+
+    -- Stop input level polls
+    if state.recording_poll then
+        state.recording_poll:stop()
+        state.recording_poll = nil
+    end
+    if state.recording_poll_r then
+        state.recording_poll_r:stop()
+        state.recording_poll_r = nil
+    end
+
     -- Stop recording
     softcut.rec(1, 0)
     softcut.rec(2, 0)
-
-    -- Stop input monitoring
-    engine.stopInputMonitor()
 
     print("Recording stopped after " .. string.format("%.1f", duration) .. "s")
     show_notification("SAVING...", 2.0)
