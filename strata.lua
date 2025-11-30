@@ -1219,18 +1219,8 @@ function init()
         elseif path == "/sample_duration" then
             state.sample_duration = args[1]
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
-        elseif path == "/input_levels" then
-            if state.recording then
-                -- SendPeakRMS sends: [peak_l, peak_r, rms_l, rms_r]
-                -- We use peak values (args[1], args[2]) for VU meters
-                local level_l = args[1] or 0
-                local level_r = args[2] or 0
-                state.recording_level_l = math.min(level_l, 1.0)
-                state.recording_level_r = math.min(level_r, 1.0)
-                -- Debug: uncomment to see values
-                print("VU: L=" .. string.format("%.3f", level_l) .. " R=" .. string.format("%.3f", level_r))
-            end
         end
+        -- Note: VU meters now use audio.level_monitor_input() directly in recording clock
     end
     
     -- Wait for engine to be ready
@@ -1638,25 +1628,36 @@ function start_recording()
     softcut.position(2, 0)
     softcut.rec_offset(2, 0)
     
-    -- Start input monitoring for VU meters
-    engine.startInputMonitor()
-    
+    -- Start input monitoring for VU meters (using norns audio API)
+    audio.level_adc_cut(1)  -- Enable ADC monitoring
+    audio.level_cut(0.05)   -- Fast meter response
+
     -- Stop any existing recording clock
     if state.recording_clock then
         clock.cancel(state.recording_clock)
     end
-    
+
     -- Store start time
     state.recording_start_time = util.time()
-    
-    -- Timer clock - just checks for timeout
+
+    -- Timer clock with VU meter polling
     state.recording_clock = clock.run(function()
         while state.recording do
-            clock.sleep(0.5)  -- Check every half second
-            
+            clock.sleep(1/30)  -- 30Hz update for smooth VU meters
+
             -- Update time from start
             state.recording_time = util.time() - state.recording_start_time
-            
+
+            -- Get input levels from norns audio system
+            state.recording_level_l = audio.level_monitor_input(0)
+            state.recording_level_r = audio.level_monitor_input(1)
+
+            -- Debug: show VU levels
+            if state.recording_level_l > 0.01 or state.recording_level_r > 0.01 then
+                print("VU: L=" .. string.format("%.3f", state.recording_level_l) ..
+                      " R=" .. string.format("%.3f", state.recording_level_r))
+            end
+
             if state.recording_time >= 30 then
                 stop_recording()
             end
@@ -1683,11 +1684,8 @@ function cancel_recording()
     softcut.play(2, 0)
     softcut.enable(1, 0)
     softcut.enable(2, 0)
-    
-    -- Stop input monitoring
-    engine.stopInputMonitor()
-    
-    -- Stop recording clock
+
+    -- Stop recording clock (which also stops VU meter polling)
     if state.recording_clock then
         clock.cancel(state.recording_clock)
         state.recording_clock = nil
@@ -1720,10 +1718,7 @@ function stop_recording()
     -- Stop recording
     softcut.rec(1, 0)
     softcut.rec(2, 0)
-    
-    -- Stop input monitoring
-    engine.stopInputMonitor()
-    
+
     print("Recording stopped after " .. string.format("%.1f", duration) .. "s")
     show_notification("SAVING...", 2.0)
     
