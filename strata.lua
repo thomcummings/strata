@@ -224,7 +224,7 @@ local state = {
     -- Gate threshold
     gate_threshold = 0.01,
 
-    -- MIDI keyboard support (chromatic, background, no velocity)
+    -- MIDI keyboard support (chromatic, background, with velocity)
     keyboard = {
         next_voice = 0,  -- Round-robin voice allocation (0-7)
         active_notes = {}  -- Maps MIDI note number to voice index
@@ -1475,7 +1475,7 @@ function release_note(fader_idx)
     engine.noteOff(fader_idx)
 end
 
--- MIDI Keyboard handlers (chromatic, always-on, no velocity)
+-- MIDI Keyboard handlers (chromatic, always-on, with velocity)
 function handle_note_on(note, vel)
     -- Ignore during recording
     if state.recording then
@@ -1502,15 +1502,18 @@ function handle_note_on(note, vel)
     -- A4 (MIDI 69) = 440 Hz
     local freq = 440 * math.pow(2, (note - 69) / 12)
 
+    -- Convert MIDI velocity (0-127) to position (0-1.0)
+    local velocity = vel / 127.0
+
     -- Track this note
     state.keyboard.active_notes[note] = voice
 
     -- Advance to next voice (round-robin 0-7)
     state.keyboard.next_voice = (voice + 1) % 8
 
-    -- Trigger note on engine (no velocity, full position)
+    -- Trigger note on engine with velocity
     engine.noteOn(voice, freq)
-    engine.setFaderPos(voice, 1.0)  -- Full velocity (no velocity sensitivity)
+    engine.setFaderPos(voice, velocity)
 end
 
 function handle_note_off(note, vel)
