@@ -1595,6 +1595,8 @@ function start_recording()
     state.recording_time = 0
     state.recording_level_l = 0
     state.recording_level_r = 0
+    state.recording_peak_l = 0  -- Track peak levels to detect mono
+    state.recording_peak_r = 0
     
     -- Create date-organized folder structure
     local date_folder = os.date("%Y%m%d")
@@ -1676,6 +1678,10 @@ function start_recording()
             state.recording_level_l = audio.level_monitor_input(0)
             state.recording_level_r = audio.level_monitor_input(1)
 
+            -- Track peak levels to detect mono recording
+            state.recording_peak_l = math.max(state.recording_peak_l, state.recording_level_l)
+            state.recording_peak_r = math.max(state.recording_peak_r, state.recording_level_r)
+
             -- Debug: show VU levels
             if state.recording_level_l > 0.01 or state.recording_level_r > 0.01 then
                 print("VU: L=" .. string.format("%.3f", state.recording_level_l) ..
@@ -1745,10 +1751,30 @@ function stop_recording()
 
     print("Recording stopped after " .. string.format("%.1f", duration) .. "s")
     show_notification("SAVING...", 2.0)
-    
-    -- Write file
-    softcut.buffer_write_stereo(state.recording_path, 0, duration, 1, 2)
-    
+
+    -- Detect mono recording based on peak levels
+    local mono_threshold = 0.02  -- Minimum level to consider channel active
+    local is_left_active = state.recording_peak_l > mono_threshold
+    local is_right_active = state.recording_peak_r > mono_threshold
+
+    print("Peak levels: L=" .. string.format("%.3f", state.recording_peak_l) ..
+          " R=" .. string.format("%.3f", state.recording_peak_r))
+
+    -- Write file based on detected input configuration
+    if is_left_active and not is_right_active then
+        -- Only left channel active - write as mono
+        print("Detected mono (left only), writing mono file...")
+        softcut.buffer_write_mono(state.recording_path, 0, duration, 1)
+    elseif is_right_active and not is_left_active then
+        -- Only right channel active - write as mono
+        print("Detected mono (right only), writing mono file...")
+        softcut.buffer_write_mono(state.recording_path, 0, duration, 2)
+    else
+        -- Both channels active or both silent - write as stereo
+        print("Writing stereo file...")
+        softcut.buffer_write_stereo(state.recording_path, 0, duration, 1, 2)
+    end
+
     print("Saving to: " .. state.recording_path)
     
     -- Wait for file write, then clean up and load
