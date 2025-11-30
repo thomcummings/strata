@@ -149,7 +149,7 @@ local state = {
     },
     
     -- LFO shape names
-    lfo_shape_names = {"Sine", "Triangle", "Square", "Random"},
+    lfo_shape_names = {"Sine", "Triangle", "Square", "Random", "Smooth Random"},
     
     -- LFO BPM divisions
     lfo_bpm_divisions = {
@@ -263,6 +263,7 @@ end
 -- Initialize LFO random values
 for i = 1, state.lfo_count do
     state.lfos[i].random_value = 0
+    state.lfos[i].next_random_value = (math.random() * 2) - 1
     state.lfos[i].last_phase = 0
 end
 
@@ -300,8 +301,20 @@ function calculate_lfo_value(lfo)
             lfo.random_value = (math.random() * 2) - 1
         end
         value = lfo.random_value or 0
+    elseif lfo.shape == 5 then
+        -- Smooth Random (interpolated random)
+        -- Smoothly glides from one random value to the next
+        if phase < lfo.last_phase then
+            -- Phase wrapped - move to next random value
+            lfo.random_value = lfo.next_random_value or 0
+            lfo.next_random_value = (math.random() * 2) - 1
+        end
+        -- Linear interpolation between current and next random value
+        local current = lfo.random_value or 0
+        local next = lfo.next_random_value or 0
+        value = current + (next - current) * phase
     end
-    
+
     lfo.last_phase = phase
     return value
 end
@@ -2154,7 +2167,7 @@ function enc(n, delta)
                 end
             elseif state.lfo_selected_param == 3 then
                 -- Shape
-                lfo.shape = util.wrap(lfo.shape + delta, 1, 4)
+                lfo.shape = util.wrap(lfo.shape + delta, 1, 5)
             elseif state.lfo_selected_param == 4 then
                 -- Rate mode
                 if delta ~= 0 then
