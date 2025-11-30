@@ -1232,8 +1232,16 @@ function init()
         elseif path == "/sample_duration" then
             state.sample_duration = args[1]
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
+        elseif path == "/input_levels" then
+            -- SendPeakRMS format: [replyID, nodeID, peak_l, peak_r, rms_l, rms_r]
+            if state.recording then
+                state.recording_level_l = math.min(args[3] or 0, 1.0)  -- peak_l
+                state.recording_level_r = math.min(args[4] or 0, 1.0)  -- peak_r
+                -- Track peak levels to detect mono recording
+                state.recording_peak_l = math.max(state.recording_peak_l, state.recording_level_l)
+                state.recording_peak_r = math.max(state.recording_peak_r, state.recording_level_r)
+            end
         end
-        -- Note: VU meters now use audio.level_monitor_input() directly in recording clock
     end
     
     -- Wait for engine to be ready
@@ -1654,36 +1662,35 @@ function start_recording()
 
     -- Store start time
     state.recording_start_time = util.time()
+    print("Recording start time: " .. string.format("%.3f", state.recording_start_time))
 
-    -- Timer clock with VU meter polling
+    -- Start input monitoring (sends levels via OSC)
+    engine.startInputMonitor()
+
+    -- Timer clock for recording timeout
     state.recording_clock = clock.run(function()
         while state.recording do
-            clock.sleep(1/30)  -- 30Hz update for smooth VU meters
+            clock.sleep(0.1)  -- Check every 100ms
 
             -- Update time from start
             state.recording_time = util.time() - state.recording_start_time
 
-            -- Get input levels from norns audio system
-            state.recording_level_l = audio.level_monitor_input(0)
-            state.recording_level_r = audio.level_monitor_input(1)
+            -- Levels are updated via OSC from SendPeakRMS (see osc.event handler)
+            -- Peaks are tracked in the OSC handler
 
-            -- Track peak levels to detect mono recording
-            state.recording_peak_l = math.max(state.recording_peak_l, state.recording_level_l)
-            state.recording_peak_r = math.max(state.recording_peak_r, state.recording_level_r)
-
-            -- Debug: show VU levels
-            if state.recording_level_l > 0.01 or state.recording_level_r > 0.01 then
-                print("VU: L=" .. string.format("%.3f", state.recording_level_l) ..
-                      " R=" .. string.format("%.3f", state.recording_level_r))
+            -- Debug: show time every second
+            if math.floor(state.recording_time) ~= math.floor(state.recording_time - 0.1) then
+                print("Recording time: " .. string.format("%.1f", state.recording_time) .. "s")
             end
 
             if state.recording_time >= 30 then
+                print("Recording timeout reached at 30s")
                 stop_recording()
             end
         end
         state.recording_clock = nil
     end)
-    
+
     print("Recording started: " .. filename)
     show_notification("RECORDING", 1.0)
 end
@@ -1704,7 +1711,10 @@ function cancel_recording()
     softcut.enable(1, 0)
     softcut.enable(2, 0)
 
-    -- Stop recording clock (which also stops VU meter polling)
+    -- Stop input monitoring
+    engine.stopInputMonitor()
+
+    -- Stop recording clock
     if state.recording_clock then
         clock.cancel(state.recording_clock)
         state.recording_clock = nil
@@ -1737,6 +1747,9 @@ function stop_recording()
     -- Stop recording
     softcut.rec(1, 0)
     softcut.rec(2, 0)
+
+    -- Stop input monitoring
+    engine.stopInputMonitor()
 
     print("Recording stopped after " .. string.format("%.1f", duration) .. "s")
     show_notification("SAVING...", 2.0)
