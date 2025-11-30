@@ -1221,13 +1221,14 @@ function init()
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
         elseif path == "/input_levels" then
             if state.recording then
-                -- SendReply sends values directly in args[1] and args[2]
+                -- SendPeakRMS sends: [peak_l, peak_r, rms_l, rms_r]
+                -- We use peak values (args[1], args[2]) for VU meters
                 local level_l = args[1] or 0
                 local level_r = args[2] or 0
                 state.recording_level_l = math.min(level_l, 1.0)
                 state.recording_level_r = math.min(level_r, 1.0)
                 -- Debug: uncomment to see values
-                 print("VU: L=" .. string.format("%.3f", level_l) .. " R=" .. string.format("%.3f", level_r))
+                print("VU: L=" .. string.format("%.3f", level_l) .. " R=" .. string.format("%.3f", level_r))
             end
         end
     end

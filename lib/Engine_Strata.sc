@@ -9,8 +9,6 @@ Engine_Strata : CroneEngine {
     var <masterGroup;
     var <lfos;
     var <monitorSynth;
-    var <monitorBus;
-    var <monitorPoll;
     var <reverbSynth;
     var voiceBus;
     var filterBus;
@@ -23,7 +21,6 @@ Engine_Strata : CroneEngine {
         // Allocate audio buses for signal routing
         voiceBus = Bus.audio(context.server, 2);    // voices → filter
         filterBus = Bus.audio(context.server, 2);   // filter → reverb
-        monitorBus = Bus.control(context.server, 2); // input monitor levels (L, R)
 
         // Allocate buffer for sample (30 seconds stereo at 48kHz)
         buffer = Buffer.alloc(context.server, 48000 * 30, 2);
@@ -249,8 +246,7 @@ Engine_Strata : CroneEngine {
         
         // Input monitoring SynthDef for recording VU meters
         SynthDef(\inputMonitor, {
-            arg out=0, poll_rate=30;
-            var input, peak_l, peak_r;
+            var input, peak_l, peak_r, trig;
 
             // Read stereo input
             input = SoundIn.ar([0, 1]);
@@ -259,8 +255,8 @@ Engine_Strata : CroneEngine {
             peak_l = Amplitude.kr(input[0], 0.005, 0.05);
             peak_r = Amplitude.kr(input[1], 0.005, 0.05);
 
-            // Output to control bus for polling
-            Out.kr(out, [peak_l, peak_r]);
+            // Send via SendPeakRMS (norns-compatible metering)
+            SendPeakRMS.kr(input, 30, 3, '/input_levels');
         }).add;
     }
     
@@ -471,42 +467,17 @@ Engine_Strata : CroneEngine {
         // Input monitoring commands
         this.addCommand(\startInputMonitor, "", { arg msg;
             // Stop existing monitor if any
-            if(monitorPoll.notNil, {
-                monitorPoll.stop;
-                monitorPoll.free;
-            });
             if(monitorSynth.notNil, {
                 monitorSynth.free;
             });
 
-            // Start new monitoring synth (outputs to control bus)
-            monitorSynth = Synth(\inputMonitor, [
-                \out, monitorBus.index
-            ], masterGroup);
+            // Start monitoring synth (SendPeakRMS handles OSC automatically)
+            monitorSynth = Synth(\inputMonitor, [], masterGroup);
 
-            // Start polling the control bus and sending OSC
-            monitorPoll = Routine({
-                var level_l, level_r;
-                loop {
-                    // Get each channel separately (getSynchronous returns single value)
-                    level_l = monitorBus.subBus(0, 1).getSynchronous;
-                    level_r = monitorBus.subBus(1, 1).getSynchronous;
-                    // Send as separate values
-                    context.server.addr.sendMsg("/input_levels", level_l, level_r);
-                    (1/30).wait; // 30Hz update rate
-                };
-            }).play(SystemClock);
-
-            postln("Input monitoring started with polling");
+            postln("Input monitoring started (SendPeakRMS)");
         });
 
         this.addCommand(\stopInputMonitor, "", { arg msg;
-            // Stop polling
-            if(monitorPoll.notNil, {
-                monitorPoll.stop;
-                monitorPoll.free;
-                monitorPoll = nil;
-            });
             // Free monitor synth
             if(monitorSynth.notNil, {
                 monitorSynth.free;
@@ -557,7 +528,6 @@ Engine_Strata : CroneEngine {
     free {
         synths.do(_.free);
         lfos.do(_.free);
-        if(monitorPoll.notNil, { monitorPoll.stop; monitorPoll.free; });
         if(monitorSynth.notNil, { monitorSynth.free; });
         reverbSynth.free;
         voiceGroup.free;
@@ -566,6 +536,5 @@ Engine_Strata : CroneEngine {
         buffer.free;
         voiceBus.free;
         filterBus.free;
-        monitorBus.free;
     }
 }
