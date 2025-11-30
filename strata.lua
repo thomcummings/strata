@@ -2267,10 +2267,10 @@ function key(n, z)
                     show_notification("REST: " .. string.upper(state.snapshot_player.euclidean_rest_behavior), 1.5)
                     save_snapshots_to_disk()
                 end
-            elseif state.current_page == 8 then
+            elseif state.current_page == 9 then
                 -- LFO page
                 local lfo = state.lfos[state.lfo_selected]
-                
+
                 if state.lfo_selected_param == 1 then
                     lfo.enabled = not lfo.enabled
                 elseif state.lfo_selected_param == 2 then
@@ -2286,7 +2286,7 @@ function key(n, z)
                         lfo.dest_param = util.wrap(lfo.dest_param + 1, dest.param_min, dest.param_max)
                     end
                 end
-            elseif state.current_page == 9 then
+            elseif state.current_page == 10 then
                 -- SCENES page: Save scene
                 save_scene(state.scene_selected)
             end
@@ -2332,7 +2332,7 @@ function key(n, z)
                         start_snapshot_sequencer()
                     end
                 end
-            elseif state.current_page == 9 then
+            elseif state.current_page == 10 then
                 -- SCENES page
                 if state.k1_held then
                     clear_scene(state.scene_selected)
