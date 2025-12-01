@@ -807,13 +807,20 @@ function trigger_play_mode_note(fader_idx)
     -- Use stored target position if available, otherwise use current position
     local position = state.play_mode.target_positions[fader_idx] or state.faders[fader_idx].position
     if position > state.gate_threshold then
-        engine.trigger(fader_idx, position)
+        -- Temporarily set fader position to target for amplitude control
+        local old_pos = state.faders[fader_idx].position
+        state.faders[fader_idx].position = position
+
+        -- Use existing trigger_note function which handles frequency calculation and engine calls
+        trigger_note(fader_idx)
+
+        -- Note: Don't restore old position - let it stay at target for play mode
     end
 end
 
 -- Release note for a specific fader
 function release_play_mode_note(fader_idx)
-    engine.release(fader_idx)
+    release_note(fader_idx)
 end
 
 -- Main playback clock
