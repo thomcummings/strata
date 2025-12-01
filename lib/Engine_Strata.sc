@@ -205,7 +205,7 @@ Engine_Strata : CroneEngine {
         SynthDef(\greyhole, {
             arg in=0, out=0,
                 delayTime=0.1, damping=0.5, size=1.0, diff=0.707,
-                feedback=0.9, modDepth=0.1, modFreq=2.0, mix=0.0;
+                feedback=0.9, modDepth=0.1, modFreq=2.0, mix=0.0, amp=1.0;
 
             var sig, verb, wet, dry;
 
@@ -228,6 +228,9 @@ Engine_Strata : CroneEngine {
 
             // Mix wet/dry using crossfade
             sig = XFade2.ar(dry, verb, mix.clip(0, 1) * 2 - 1);
+
+            // Apply master amp (for muting during recording)
+            sig = sig * amp.clip(0, 1);
 
             Out.ar(out, sig);
         }).add;
@@ -468,7 +471,12 @@ Engine_Strata : CroneEngine {
             var modFreq = msg[1].asFloat.clip(0.1, 10.0);
             reverbSynth.set(\modFreq, modFreq);
         });
-        
+
+        this.addCommand(\setMasterAmp, "f", { arg msg;
+            var amp = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\amp, amp);
+        });
+
         // Voice parameters
         this.addCommand(\setVoiceAmp, "if", { arg msg;
             var voice = msg[1].asInteger;
