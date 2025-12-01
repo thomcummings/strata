@@ -245,6 +245,7 @@ local state = {
         playing = false,
         current_step = 1,
         active_faders = {},  -- List of fader indices with position > threshold
+        target_positions = {},  -- Target positions for each fader (for strum/arp from snapshots)
         direction = 1,  -- For updown pattern (1 or -1)
         clock_id = nil,
 
@@ -814,9 +815,10 @@ end
 
 -- Trigger note for a specific fader
 function trigger_play_mode_note(fader_idx)
-    local f = state.faders[fader_idx]
-    if f.position > state.gate_threshold then
-        engine.trigger(fader_idx, f.position)
+    -- Use stored target position if available, otherwise use current position
+    local position = state.play_mode.target_positions[fader_idx] or state.faders[fader_idx].position
+    if position > state.gate_threshold then
+        engine.trigger(fader_idx, position)
     end
 end
 
@@ -828,9 +830,13 @@ end
 -- Main playback clock
 function play_mode_clock()
     while state.play_mode.playing do
-        -- Update active faders list (for live arp)
+        -- Update active faders list and positions (for live arp)
         if state.play_mode.mode == "arp" and state.play_mode.arp_source == "live" then
             state.play_mode.active_faders = get_active_faders()
+            -- Update target positions from current fader positions
+            for i = 0, 7 do
+                state.play_mode.target_positions[i] = state.faders[i].position
+            end
         end
 
         -- Get next fader to trigger
@@ -873,9 +879,20 @@ function play_mode_clock()
 end
 
 -- Start play mode (called when snapshot triggers or arp toggled)
-function start_play_mode(source_faders)
+function start_play_mode(source_faders, target_positions)
     -- Capture fader positions
     state.play_mode.active_faders = source_faders or get_active_faders()
+
+    -- Store target positions (if provided, used for strum/arp from snapshots)
+    if target_positions then
+        state.play_mode.target_positions = target_positions
+    else
+        -- For live mode, use current fader positions
+        state.play_mode.target_positions = {}
+        for i = 0, 7 do
+            state.play_mode.target_positions[i] = state.faders[i].position
+        end
+    end
 
     if #state.play_mode.active_faders == 0 then
         return  -- Nothing to play
@@ -961,17 +978,20 @@ function start_morph(to_idx)
 
     print("Morphing to snapshot " .. to_idx)
 
-    -- Trigger play mode if strum is enabled
-    if state.play_mode.mode == "strum" then
-        -- Get active faders from the target snapshot
+    -- Trigger play mode if strum or arp is enabled
+    if state.play_mode.mode == "strum" or (state.play_mode.mode == "arp" and state.play_mode.arp_source == "snapshot") then
+        -- Get active faders and their target positions from the snapshot
         local active_faders = {}
+        local target_positions = {}
         for i = 0, 7 do
-            if state.snapshots[to_idx].positions[i] > state.gate_threshold then
+            local pos = state.snapshots[to_idx].positions[i]
+            target_positions[i] = pos
+            if pos > state.gate_threshold then
                 table.insert(active_faders, i)
             end
         end
         if #active_faders > 0 then
-            start_play_mode(active_faders)
+            start_play_mode(active_faders, target_positions)
         end
     end
 end
