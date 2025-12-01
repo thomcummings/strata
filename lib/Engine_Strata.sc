@@ -298,47 +298,48 @@ Engine_Strata : CroneEngine {
         // Sample loading with mono-to-stereo conversion
         this.addCommand(\loadSample, "s", { arg msg;
             var path = msg[1].asString;
-            var sf, numChannels, fileFrames, fileDuration;
+            var soundFile;
 
             postln("Engine loading sample: " ++ path);
 
-            // Read soundfile header to check channel count and duration
-            sf = SoundFile.new;
-            if(sf.openRead(path), {
-                numChannels = sf.numChannels;
-                fileFrames = sf.numFrames;
-                fileDuration = fileFrames / sf.sampleRate;
-                sf.close;
+            // Check file info first to detect mono vs stereo
+            soundFile = SoundFile.new;
+            if(soundFile.openRead(path), {
+                var numChannels = soundFile.numChannels;
+                var numFrames = soundFile.numFrames;
+                var duration;
 
-                postln("Sample info: " ++ numChannels ++ " channels, " ++ fileFrames ++ " frames, " ++ fileDuration ++ "s");
+                soundFile.close;
 
-                // Handle mono files - load as mono, playback converts to stereo
+                postln("Sample info: " ++ numChannels ++ " channels, " ++ numFrames ++ " frames, " ++ (numFrames / context.server.sampleRate) ++ "s");
+
+                // Handle mono files: read channel 0 into both buffer channels
                 if(numChannels == 1, {
                     postln("Loading mono file (will be converted to stereo during playback)...");
-
-                    // Load mono file into mono buffer
-                    buffer.allocRead(path, completionMessage: {
+                    buffer.allocReadChannel(path, 0, -1, [0, 0], {
+                        duration = buffer.numFrames / context.server.sampleRate;
                         postln("Mono sample loaded: " ++ path);
-                        postln("Buffer frames=" ++ buffer.numFrames ++ " channels=" ++ buffer.numChannels ++ " Duration=" ++ fileDuration ++ "s");
+                        postln("Buffer frames=" ++ buffer.numFrames ++ " channels=" ++ buffer.numChannels ++ " Duration=" ++ duration ++ "s");
 
-                        // Send actual file duration to Lua via OSC
-                        NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
+                        // Send duration to Lua via OSC
+                        context.server.addr.sendMsg("/sample_duration", duration);
 
-                        // Trigger waveform generation with actual file frames
-                        this.generateWaveform(buffer, fileFrames);
+                        // Trigger waveform generation
+                        this.generateWaveform(buffer);
                     });
                 }, {
-                    // Load stereo file normally
+                    // Stereo file: read normally
                     postln("Loading stereo file...");
                     buffer.allocRead(path, completionMessage: {
+                        duration = buffer.numFrames / context.server.sampleRate;
                         postln("Stereo sample loaded: " ++ path);
-                        postln("Buffer frames=" ++ buffer.numFrames ++ " Duration=" ++ fileDuration ++ "s");
+                        postln("Buffer frames=" ++ buffer.numFrames ++ " channels=" ++ buffer.numChannels ++ " Duration=" ++ duration ++ "s");
 
-                        // Send actual file duration to Lua via OSC
-                        NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
+                        // Send duration to Lua via OSC
+                        context.server.addr.sendMsg("/sample_duration", duration);
 
-                        // Trigger waveform generation with actual file frames
-                        this.generateWaveform(buffer, fileFrames);
+                        // Trigger waveform generation
+                        this.generateWaveform(buffer);
                     });
                 });
             }, {
