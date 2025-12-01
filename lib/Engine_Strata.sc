@@ -8,37 +8,46 @@ Engine_Strata : CroneEngine {
     var <filterGroup;
     var <masterGroup;
     var <lfos;
-    var <monitorSynth; 
+    var <monitorSynth;
+    var <reverbSynth;
     var voiceBus;
+    var filterBus;
+    var peakBusL;  // Control bus for left peak
+    var peakBusR;  // Control bus for right peak
     
     *new { arg context, doneCallback;
         ^super.new(context, doneCallback);
     }
     
     alloc {
-        // Allocate audio bus for voice mixing
-        voiceBus = Bus.audio(context.server, 2);
-        
+        // Allocate audio buses for signal routing
+        voiceBus = Bus.audio(context.server, 2);    // voices → filter
+        filterBus = Bus.audio(context.server, 2);   // filter → reverb
+
+        // Allocate control buses for recording level monitoring
+        peakBusL = Bus.control(context.server, 1);
+        peakBusR = Bus.control(context.server, 1);
+
         // Allocate buffer for sample (30 seconds stereo at 48kHz)
         buffer = Buffer.alloc(context.server, 48000 * 30, 2);
-        
+
         // Create synth groups for proper ordering
         voiceGroup = Group.new(context.server);
         filterGroup = Group.after(voiceGroup);
         masterGroup = Group.after(filterGroup);
-        
+
         // Initialize synths array
         synths = Array.newClear(8);
-        
+
         // Initialize LFOs array
         lfos = Array.newClear(3);
-        
+
         // Load SynthDefs
         this.loadSynthDefs;
-        
+
         // Wait for SynthDefs to load
         context.server.sync;
-        
+
         // Create 8 voice synths
         8.do({ arg i;
             synths[i] = Synth(\faderVoice, [
@@ -48,13 +57,27 @@ Engine_Strata : CroneEngine {
                 \xfadeTime, 0.1
             ], voiceGroup);
         });
-        
-        // Create master filter synth (store in filterGroup for set commands)
+
+        // Create master filter synth (voices → filter)
         Synth(\masterFilter, [
             \in, voiceBus,
-            \out, context.out_b
+            \out, filterBus
         ], filterGroup);
-        
+
+        // Create reverb synth (filter → reverb → output)
+        reverbSynth = Synth(\greyhole, [
+            \in, filterBus,
+            \out, context.out_b,
+            \delayTime, 0.2,      // Initial delay time (will be set by Lua)
+            \damping, 0.5,         // Initial damping
+            \size, 2.0,            // Larger room size for better quality
+            \diff, 0.7,            // Good diffusion
+            \feedback, 0.9,        // High feedback for long decay
+            \modDepth, 0.2,        // Moderate modulation depth
+            \modFreq, 0.5,         // Slow modulation for smooth sound
+            \mix, 0.0              // Start completely dry
+        ], masterGroup);
+
         // Create 3 LFO synths
         3.do({ arg i;
             lfos[i] = Synth(\lfo, [
@@ -62,22 +85,23 @@ Engine_Strata : CroneEngine {
                 \depth, 0
             ], masterGroup);
         });
-        
+
         // Add engine commands
         this.addCommands;
-        
+
         postln("strata engine initialized");
     }
     
     loadSynthDefs {
         // Voice SynthDef - plays pitched sample with gating
         SynthDef(\faderVoice, {
-            arg out=0, bufnum=0, 
+            arg out=0, bufnum=0,
                 gate=0, freq=440, amp=0.8, pan=0,
                 loopStart=0, loopEnd=1, speed=1.0, reverse=0,
                 faderPos=0,
                 filterCutoff=20000, filterRes=0.1, filterOffset=0,
                 attack=0.001, decay=0.1, sustain=0.7, release=0.2,
+                envFilterMod=0,
                 xfadeTime=0.1;
             
             var sig, env, playhead, startFrame, endFrame, bufFrames, playRate;
@@ -85,17 +109,18 @@ Engine_Strata : CroneEngine {
             var loopLength, xfadeFrames, normPhase, window;
             
             bufFrames = BufFrames.kr(bufnum);
-            
+
             // Calculate start and end frames
             startFrame = loopStart * bufFrames;
             endFrame = loopEnd * bufFrames;
             loopLength = endFrame - startFrame;
-            
+
             // Crossfade: fixed at 5% of loop length or 20ms, whichever is smaller
             xfadeFrames = min(loopLength * 0.05, SampleRate.ir * 0.02);
-            
-            // Playback rate combines pitch shift and speed
-            playRate = BufRateScale.kr(bufnum) * (freq / 440.0) * speed;
+
+            // Playback rate combines pitch shift, speed, and reverse
+            // reverse: 0 = forward (1), 1 = backward (-1)
+            playRate = BufRateScale.kr(bufnum) * (freq / 440.0) * speed * (1 - (2 * reverse));
             
             // Envelope: ADSR with minimum values to prevent clicks
             env = EnvGen.kr(
@@ -112,15 +137,18 @@ Engine_Strata : CroneEngine {
                 endFrame,
                 startFrame
             );
-            
+
             // Read from buffer with cubic interpolation
-            sig = BufRd.ar(
-                2,
-                bufnum,
-                playhead,
-                1, // loop (BufRd internal loop)
-                4  // cubic interpolation
-            );
+            // Handle both mono and stereo samples
+            sig = if(BufChannels.ir(bufnum) == 1, {
+                // Mono buffer: read one channel and create pseudo-stereo
+                var mono = BufRd.ar(1, bufnum, playhead, 1, 4);
+                var delayed = DelayC.ar(mono, 0.02, 0.010);  // 10ms delay on right
+                [mono, delayed]
+            }, {
+                // Stereo buffer: read both channels normally
+                BufRd.ar(2, bufnum, playhead, 1, 4)
+            });
             
             // Apply simple window at loop boundaries to smooth discontinuities
             // Normalized phase within loop (0 to 1)
@@ -137,8 +165,8 @@ Engine_Strata : CroneEngine {
             // Apply envelope, fader position, and amp
             sig = sig * env * amp * faderPos.lag(0.002);
             
-            // Per-voice filter
-            filterFreq = (filterCutoff + filterOffset).clip(20, 20000);
+            // Per-voice filter with envelope modulation
+            filterFreq = (filterCutoff + filterOffset + (env * envFilterMod)).clip(20, 20000);
             localFilter = RLPF.ar(sig, filterFreq, filterRes.linlin(0, 1, 1, 0.1));
             
             // Pan
@@ -155,22 +183,53 @@ Engine_Strata : CroneEngine {
             arg in=0, out=0,
                 cutoff=20000, resonance=0.1, filterType=0,
                 drive=1.0;
-            
+
             var sig, filtered;
-            
+
             sig = In.ar(in, 2);
-            
+
             // Apply drive/saturation
             sig = (sig * drive).tanh;
-            
+
             // Select filter type: 0=LP, 1=HP, 2=BP
             filtered = Select.ar(filterType, [
                 RLPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 1, 0.1)),
                 RHPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 1, 0.1)),
                 BPF.ar(sig, cutoff.clip(20, 20000), resonance.linlin(0, 1, 0.5, 0.05))
             ]);
-            
+
             Out.ar(out, filtered);
+        }).add;
+
+        // Greyhole Reverb SynthDef (mi-engines)
+        SynthDef(\greyhole, {
+            arg in=0, out=0,
+                delayTime=0.1, damping=0.5, size=1.0, diff=0.707,
+                feedback=0.9, modDepth=0.1, modFreq=2.0, mix=0.0;
+
+            var sig, verb, wet, dry;
+
+            // Read input
+            sig = In.ar(in, 2);
+            dry = sig;
+
+            // Greyhole reverb (mi-engines - high quality)
+            // Greyhole expects: delayTime, damping, size, diff, feedback, modDepth, modFreq
+            verb = Greyhole.ar(
+                sig,
+                delayTime.clip(0.001, 2.0),   // delay time (0.001-2.0)
+                damping.clip(0, 1),            // damping (0-1)
+                size.clip(0.5, 5.0),           // size (0.5-5.0)
+                diff.clip(0, 1),               // diffusion (0-1)
+                feedback.clip(0, 1),           // feedback (0-1)
+                modDepth.clip(0, 1),           // modulation depth (0-1)
+                modFreq.clip(0.1, 10)          // modulation freq (0.1-10)
+            );
+
+            // Mix wet/dry using crossfade
+            sig = XFade2.ar(dry, verb, mix.clip(0, 1) * 2 - 1);
+
+            Out.ar(out, sig);
         }).add;
         
         // LFO SynthDef
@@ -191,20 +250,22 @@ Engine_Strata : CroneEngine {
             Out.kr(bus, lfo);
         }).add;
         
-        // Input monitoring SynthDef for recording VU meters
+        // Input monitoring SynthDef for recording level tracking
         SynthDef(\inputMonitor, {
-            arg out=0;
-            var input, peak_l, peak_r;
-            
+            arg peakBusL=0, peakBusR=1;
+            var input, peakL, peakR;
+
             // Read stereo input
             input = SoundIn.ar([0, 1]);
-            
-            // Measure peak levels
-            peak_l = Amplitude.kr(input[0], 0.01, 0.1);
-            peak_r = Amplitude.kr(input[1], 0.01, 0.1);
-            
-            // Send via SendReply (norns handles routing automatically)
-            SendReply.kr(Impulse.kr(20), '/input_levels', [peak_l, peak_r]);
+
+            // Track peak levels with fast attack, slow decay
+            // Peak.kr will hold the peak value until reset
+            peakL = Peak.kr(Amplitude.kr(input[0], 0.01, 0.1), Impulse.kr(0));
+            peakR = Peak.kr(Amplitude.kr(input[1], 0.01, 0.1), Impulse.kr(0));
+
+            // Write peaks to control buses
+            Out.kr(peakBusL, peakL);
+            Out.kr(peakBusR, peakR);
         }).add;
     }
     
@@ -234,7 +295,7 @@ Engine_Strata : CroneEngine {
             });
         });
         
-        // Sample loading
+        // Sample loading with mono-to-stereo conversion
         this.addCommand(\loadSample, "s", { arg msg;
             var path = msg[1].asString;
             var soundFile;
@@ -341,6 +402,50 @@ Engine_Strata : CroneEngine {
                 lfos[lfoNum].set(\rate, rate, \depth, depth, \shape, shape);
             });
         });
+
+        // Reverb control
+        this.addCommand(\setReverbMix, "f", { arg msg;
+            var mix = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\mix, mix);
+        });
+
+        this.addCommand(\setReverbTime, "f", { arg msg;
+            var time = msg[1].asFloat.clip(0.1, 10.0);
+            // Map time (0.1-10s) to delayTime parameter (0.001-2.0)
+            // Use exponential mapping for more natural control
+            var delayTime = time.linexp(0.1, 10.0, 0.01, 2.0);
+            reverbSynth.set(\delayTime, delayTime);
+        });
+
+        this.addCommand(\setReverbSize, "f", { arg msg;
+            var size = msg[1].asFloat.clip(0.5, 5.0);
+            reverbSynth.set(\size, size);
+        });
+
+        this.addCommand(\setReverbDamping, "f", { arg msg;
+            var damping = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\damping, damping);
+        });
+
+        this.addCommand(\setReverbFeedback, "f", { arg msg;
+            var feedback = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\feedback, feedback);
+        });
+
+        this.addCommand(\setReverbDiff, "f", { arg msg;
+            var diff = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\diff, diff);
+        });
+
+        this.addCommand(\setReverbModDepth, "f", { arg msg;
+            var modDepth = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\modDepth, modDepth);
+        });
+
+        this.addCommand(\setReverbModFreq, "f", { arg msg;
+            var modFreq = msg[1].asFloat.clip(0.1, 10.0);
+            reverbSynth.set(\modFreq, modFreq);
+        });
         
         // Voice parameters
         this.addCommand(\setVoiceAmp, "if", { arg msg;
@@ -370,6 +475,15 @@ Engine_Strata : CroneEngine {
                 synths[voice].set(\attack, attack, \decay, decay, \sustain, sustain, \release, release);
             });
         });
+
+        // Envelope to filter modulation
+        this.addCommand(\setEnvFilterMod, "f", { arg msg;
+            var envFilterMod = msg[1].asFloat.clip(0.0, 1.0);
+            // Apply to all voices
+            8.do({ arg i;
+                synths[i].set(\envFilterMod, envFilterMod * 10000);  // 0-10kHz range
+            });
+        });
         
         // Crossfade time control
         this.addCommand(\setXfadeTime, "f", { arg msg;
@@ -393,19 +507,24 @@ Engine_Strata : CroneEngine {
         
         // Input monitoring commands
         this.addCommand(\startInputMonitor, "", { arg msg;
-            // Free existing monitor if any
+            // Stop existing monitor if any
             if(monitorSynth.notNil, {
                 monitorSynth.free;
             });
-            
-            // Start new monitoring synth
+
+            // Reset peak buses to zero
+            peakBusL.set(0);
+            peakBusR.set(0);
+
+            // Start monitoring synth with peak tracking
             monitorSynth = Synth(\inputMonitor, [
-                \out, context.out_b
+                \peakBusL, peakBusL.index,
+                \peakBusR, peakBusR.index
             ], masterGroup);
-            
-            postln("Input monitoring started");
+
+            postln("Input monitoring started (peak tracking)");
         });
-        
+
         this.addCommand(\stopInputMonitor, "", { arg msg;
             // Free monitor synth
             if(monitorSynth.notNil, {
@@ -414,15 +533,32 @@ Engine_Strata : CroneEngine {
             });
             postln("Input monitoring stopped");
         });
+
+        // Get accumulated recording levels
+        this.addCommand(\getRecordingLevels, "", { arg msg;
+            // Read peak values from control buses
+            peakBusL.get({ arg peakL;
+                peakBusR.get({ arg peakR;
+                    postln("Recording peaks: L=" ++ peakL ++ " R=" ++ peakR);
+
+                    // Send levels to Lua via OSC
+                    NetAddr("localhost", 10111).sendMsg("/recording_levels", peakL, peakR);
+                });
+            });
+        });
     }
     
     // Generate waveform data for display (method defined OUTSIDE addCommands)
-    generateWaveform { arg buf;
+    // Pass optional numFrames to use actual file size instead of buffer size
+    generateWaveform { arg buf, numFrames;
         var numSamples = 128; // Display resolution
-        var step, peaks;
-        
-        if(buf.numFrames > 0, {
-            step = buf.numFrames / numSamples;
+        var step, peaks, framesToUse;
+
+        // Use provided numFrames or fall back to buffer size
+        framesToUse = numFrames ?? buf.numFrames;
+
+        if(framesToUse > 0, {
+            step = framesToUse / numSamples;
             
             // Read buffer and find peaks for each display segment
             buf.loadToFloatArray(action: { arg array;
@@ -457,10 +593,15 @@ Engine_Strata : CroneEngine {
     free {
         synths.do(_.free);
         lfos.do(_.free);
+        if(monitorSynth.notNil, { monitorSynth.free; });
+        reverbSynth.free;
         voiceGroup.free;
         filterGroup.free;
         masterGroup.free;
         buffer.free;
         voiceBus.free;
+        filterBus.free;
+        peakBusL.free;
+        peakBusR.free;
     }
 }

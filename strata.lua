@@ -1,6 +1,17 @@
--- strata.lua
--- Vestax Faderboard emulation for Norns
--- v1.2 - with Pattern & Euclidean Sequencer
+-- strata
+-- 8-voice performance sampler
+-- v1.0
+--
+-- inspired by vestax faderboard
+--
+-- K2: load sample
+-- K3: start sequencer
+-- E1: change page
+-- E2/E3: adjust parameters
+--
+-- load chord packs in snapshots
+-- sequence between snapshots
+-- modulate with filters & lfos
 
 engine.name = "Strata"
 
@@ -58,6 +69,7 @@ local state = {
     env_decay = 0.1,
     env_sustain = 1.0,
     env_release = 0.2,
+    env_filter_mod = 0.0,  -- 0.0 to 1.0 (0% to 100% of 10kHz range)
     
     -- Scale parameters
     current_scale = "Major",
@@ -70,7 +82,17 @@ local state = {
     master_filter_resonance = 0.1,
     master_filter_type = 0,
     filter_drive = 1.0,
-    
+
+    -- Reverb parameters (Greyhole)
+    reverb_mix = 0.0,        -- 0.0 to 1.0 (wet/dry blend)
+    reverb_time = 2.0,       -- 0.1 to 10.0 seconds (mapped to delayTime)
+    reverb_size = 2.0,       -- 0.5 to 5.0 (room size)
+    reverb_damping = 0.5,    -- 0.0 to 1.0 (high freq damping)
+    reverb_feedback = 0.9,   -- 0.0 to 1.0 (reverb tail length)
+    reverb_diff = 0.7,       -- 0.0 to 1.0 (diffusion/smoothness)
+    reverb_mod_depth = 0.2,  -- 0.0 to 1.0 (modulation depth)
+    reverb_mod_freq = 0.5,   -- 0.1 to 10.0 (modulation frequency)
+
     -- LFO parameters
     lfo_count = 3,  -- Can increase this later
     lfos = {
@@ -121,16 +143,24 @@ local state = {
         {name = "Smp Length", has_param = false},
         {name = "Smp Speed", has_param = false},
         {name = "Smp XFade", has_param = false},
-        {name = "Smp Gain", has_param = false}, 
+        {name = "Smp Gain", has_param = false},
         {name = "Env Attack", has_param = false},
         {name = "Env Decay", has_param = false},
         {name = "Env Sustain", has_param = false},
         {name = "Env Release", has_param = false},
-        {name = "Octave", has_param = false}
+        {name = "Octave", has_param = false},
+        {name = "Rvb Mix", has_param = false},
+        {name = "Rvb Time", has_param = false},
+        {name = "Rvb Size", has_param = false},
+        {name = "Rvb Damping", has_param = false},
+        {name = "Rvb Feedback", has_param = false},
+        {name = "Rvb Diff", has_param = false},
+        {name = "Rvb ModDepth", has_param = false},
+        {name = "Rvb ModFreq", has_param = false}
     },
     
     -- LFO shape names
-    lfo_shape_names = {"Sine", "Triangle", "Square", "Random"},
+    lfo_shape_names = {"Sine", "Triangle", "Square", "Random", "Smooth Random"},
     
     -- LFO BPM divisions
     lfo_bpm_divisions = {
@@ -204,6 +234,12 @@ local state = {
     
     -- Gate threshold
     gate_threshold = 0.01,
+
+    -- MIDI keyboard support (chromatic, background, with velocity)
+    keyboard = {
+        next_voice = 0,  -- Round-robin voice allocation (0-7)
+        active_notes = {}  -- Maps MIDI note number to voice index
+    },
 }
 
 -- Initialize fader states
@@ -238,6 +274,7 @@ end
 -- Initialize LFO random values
 for i = 1, state.lfo_count do
     state.lfos[i].random_value = 0
+    state.lfos[i].next_random_value = (math.random() * 2) - 1
     state.lfos[i].last_phase = 0
 end
 
@@ -275,8 +312,20 @@ function calculate_lfo_value(lfo)
             lfo.random_value = (math.random() * 2) - 1
         end
         value = lfo.random_value or 0
+    elseif lfo.shape == 5 then
+        -- Smooth Random (interpolated random)
+        -- Smoothly glides from one random value to the next
+        if phase < lfo.last_phase then
+            -- Phase wrapped - move to next random value
+            lfo.random_value = lfo.next_random_value or 0
+            lfo.next_random_value = (math.random() * 2) - 1
+        end
+        -- Linear interpolation between current and next random value
+        local current = lfo.random_value or 0
+        local next = lfo.next_random_value or 0
+        value = current + (next - current) * phase
     end
-    
+
     lfo.last_phase = phase
     return value
 end
@@ -402,12 +451,53 @@ function apply_lfo_modulation()
             local base = state.octave_offset
             local mod_octave = math.floor((mod_amount * 2) + 0.5)  -- Rounds to nearest integer
             local new_octave = util.clamp(base + mod_octave, -2, 2)
-            
+
             -- Only update if octave changed
             if new_octave ~= state.octave_offset then
                 state.octave_offset = new_octave
                 update_all_notes()
             end
+
+        -- Reverb parameters
+        elseif dest.name == "Rvb Mix" then
+            local base = state.reverb_mix
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbMix(new_val)
+
+        elseif dest.name == "Rvb Time" then
+            local base = state.reverb_time
+            local new_val = util.clamp(base + (mod_amount * 5.0), 0.1, 10.0)
+            engine.setReverbTime(new_val)
+
+        elseif dest.name == "Rvb Size" then
+            local base = state.reverb_size
+            local new_val = util.clamp(base + (mod_amount * 2.0), 0.5, 5.0)
+            engine.setReverbSize(new_val)
+
+        elseif dest.name == "Rvb Damping" then
+            local base = state.reverb_damping
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbDamping(new_val)
+
+        elseif dest.name == "Rvb Feedback" then
+            local base = state.reverb_feedback
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbFeedback(new_val)
+
+        elseif dest.name == "Rvb Diff" then
+            local base = state.reverb_diff
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbDiff(new_val)
+
+        elseif dest.name == "Rvb ModDepth" then
+            local base = state.reverb_mod_depth
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setReverbModDepth(new_val)
+
+        elseif dest.name == "Rvb ModFreq" then
+            local base = state.reverb_mod_freq
+            local new_val = util.clamp(base + (mod_amount * 5.0), 0.1, 10.0)
+            engine.setReverbModFreq(new_val)
         end
         
         ::continue::
@@ -883,6 +973,7 @@ function save_scene(slot)
         env_decay = state.env_decay,
         env_sustain = state.env_sustain,
         env_release = state.env_release,
+        env_filter_mod = state.env_filter_mod,
         
         -- Scale
         current_scale = state.current_scale,
@@ -895,7 +986,17 @@ function save_scene(slot)
         master_filter_resonance = state.master_filter_resonance,
         master_filter_type = state.master_filter_type,
         filter_drive = state.filter_drive,
-        
+
+        -- Reverb
+        reverb_mix = state.reverb_mix,
+        reverb_time = state.reverb_time,
+        reverb_size = state.reverb_size,
+        reverb_damping = state.reverb_damping,
+        reverb_feedback = state.reverb_feedback,
+        reverb_diff = state.reverb_diff,
+        reverb_mod_depth = state.reverb_mod_depth,
+        reverb_mod_freq = state.reverb_mod_freq,
+
         -- LFO (placeholder for future)
         lfos = {
             {rate = state.lfos[1].rate, depth = state.lfos[1].depth, shape = state.lfos[1].shape},
@@ -990,6 +1091,7 @@ function load_scene(slot)
     state.env_decay = scene.env_decay
     state.env_sustain = scene.env_sustain
     state.env_release = scene.env_release
+    state.env_filter_mod = scene.env_filter_mod or 0.0
     
     -- Load scale
     state.current_scale = scene.current_scale
@@ -1002,7 +1104,17 @@ function load_scene(slot)
     state.master_filter_resonance = scene.master_filter_resonance
     state.master_filter_type = scene.master_filter_type
     state.filter_drive = scene.filter_drive
-    
+
+    -- Load reverb (with defaults for backward compatibility)
+    state.reverb_mix = scene.reverb_mix or 0.0
+    state.reverb_time = scene.reverb_time or 2.0
+    state.reverb_size = scene.reverb_size or 2.0
+    state.reverb_damping = scene.reverb_damping or 0.5
+    state.reverb_feedback = scene.reverb_feedback or 0.9
+    state.reverb_diff = scene.reverb_diff or 0.7
+    state.reverb_mod_depth = scene.reverb_mod_depth or 0.2
+    state.reverb_mod_freq = scene.reverb_mod_freq or 0.5
+
     -- Load LFO (placeholder)
     state.lfos[1].rate = scene.lfos[1].rate
     state.lfos[1].depth = scene.lfos[1].depth
@@ -1038,11 +1150,24 @@ function load_scene(slot)
     engine.setReverse(state.reverse)
     engine.setXfadeTime(state.xfade_time)
     engine.setMasterFilter(state.master_filter_cutoff, state.master_filter_resonance, state.master_filter_type)
-    
+
+    -- Apply reverb settings
+    engine.setReverbMix(state.reverb_mix)
+    engine.setReverbTime(state.reverb_time)
+    engine.setReverbSize(state.reverb_size)
+    engine.setReverbDamping(state.reverb_damping)
+    engine.setReverbFeedback(state.reverb_feedback)
+    engine.setReverbDiff(state.reverb_diff)
+    engine.setReverbModDepth(state.reverb_mod_depth)
+    engine.setReverbModFreq(state.reverb_mod_freq)
+
     for i = 0, state.num_faders - 1 do
         engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
     end
-    
+
+    -- Apply envelope filter modulation
+    engine.setEnvFilterMod(state.env_filter_mod)
+
     -- Update any active notes with new scale
     update_all_notes()
     
@@ -1105,6 +1230,8 @@ function init()
     MidiHandler.on_filter_cutoff = handle_filter_cutoff
     MidiHandler.on_filter_resonance = handle_filter_resonance
     MidiHandler.on_voice_filter_offset = handle_voice_filter_offset
+    MidiHandler.on_note_on = handle_note_on
+    MidiHandler.on_note_off = handle_note_off
     
     -- Set up OSC receiver for waveform data, sample duration, and input levels
     osc.event = function(path, args, from)
@@ -1116,15 +1243,31 @@ function init()
         elseif path == "/sample_duration" then
             state.sample_duration = args[1]
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
-        elseif path == "/input_levels" then
-            if state.recording then
-                -- args[3] and args[4] contain the values (SendReply adds node ID and reply ID first)
-                state.recording_level_l = math.min(args[3] or 0, 1.0)
-                state.recording_level_r = math.min(args[4] or 0, 1.0)
-                print("Levels: L=" .. string.format("%.2f", state.recording_level_l) .. 
-                      " R=" .. string.format("%.2f", state.recording_level_r))  -- DEBUG
+        elseif path == "/recording_levels" then
+            -- Receive accumulated peak levels from engine
+            local peakL = args[1]
+            local peakR = args[2]
+            print("Received levels: L=" .. string.format("%.3f", peakL) ..
+                  " R=" .. string.format("%.3f", peakR))
+
+            -- Determine mono/stereo with threshold
+            local threshold = 0.01
+            local hasLeft = peakL > threshold
+            local hasRight = peakR > threshold
+
+            -- Store for use in file writing
+            state.recording_is_mono = hasLeft ~= hasRight
+            state.recording_mono_voice = hasLeft and 1 or 2
+
+            print("Detection: " .. (state.recording_is_mono and "MONO" or "STEREO"))
+            if state.recording_is_mono then
+                print("Mono source: " .. (state.recording_mono_voice == 1 and "LEFT" or "RIGHT"))
             end
+
+            -- Trigger the actual file write
+            clock.run(write_recording_file)
         end
+        -- Note: Recording levels monitored via SC control buses
     end
     
     -- Wait for engine to be ready
@@ -1137,12 +1280,25 @@ function init()
           engine.setReverse(state.reverse)
           engine.setLoopPoints(state.loop_start, calculate_loop_end())  -- Changed to use helper
           engine.setXfadeTime(state.xfade_time)
-        
+
+        -- Set reverb parameters
+        engine.setReverbMix(state.reverb_mix)
+        engine.setReverbTime(state.reverb_time)
+        engine.setReverbSize(state.reverb_size)
+        engine.setReverbDamping(state.reverb_damping)
+        engine.setReverbFeedback(state.reverb_feedback)
+        engine.setReverbDiff(state.reverb_diff)
+        engine.setReverbModDepth(state.reverb_mod_depth)
+        engine.setReverbModFreq(state.reverb_mod_freq)
+
         -- Set envelope for all voices
         for i = 0, state.num_faders - 1 do
             engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
         end
-        
+
+        -- Set envelope filter modulation
+        engine.setEnvFilterMod(state.env_filter_mod)
+
         print("Strata v1.2 ready")
         print("MIDI channel: " .. MidiHandler.midi_channel)
         print("Fader CCs: " .. MidiHandler.fader_cc_start .. "-" .. (MidiHandler.fader_cc_start + 7))
@@ -1357,8 +1513,66 @@ end
 function release_note(fader_idx)
     local fader = state.faders[fader_idx]
     fader.active = false
-    
+
     engine.noteOff(fader_idx)
+end
+
+-- MIDI Keyboard handlers (chromatic, always-on, with velocity)
+function handle_note_on(note, vel)
+    -- Ignore during recording
+    if state.recording then
+        return
+    end
+
+    -- Check if note is already playing
+    if state.keyboard.active_notes[note] then
+        return  -- Already playing this note
+    end
+
+    -- Allocate next voice (round-robin)
+    local voice = state.keyboard.next_voice
+
+    -- If this voice is already playing a keyboard note, release it
+    for midi_note, voice_idx in pairs(state.keyboard.active_notes) do
+        if voice_idx == voice then
+            state.keyboard.active_notes[midi_note] = nil
+            break
+        end
+    end
+
+    -- Calculate chromatic frequency (MIDI note to Hz)
+    -- A4 (MIDI 69) = 440 Hz
+    local freq = 440 * math.pow(2, (note - 69) / 12)
+
+    -- Convert MIDI velocity (0-127) to position (0-1.0)
+    local velocity = vel / 127.0
+
+    -- Track this note
+    state.keyboard.active_notes[note] = voice
+
+    -- Advance to next voice (round-robin 0-7)
+    state.keyboard.next_voice = (voice + 1) % 8
+
+    -- Trigger note on engine with velocity
+    engine.noteOn(voice, freq)
+    engine.setFaderPos(voice, velocity)
+end
+
+function handle_note_off(note, vel)
+    -- Ignore during recording
+    if state.recording then
+        return
+    end
+
+    -- Find which voice is playing this note
+    local voice = state.keyboard.active_notes[note]
+    if voice then
+        -- Release the note
+        engine.noteOff(voice)
+
+        -- Remove from active notes
+        state.keyboard.active_notes[note] = nil
+    end
 end
 
 -- Load a sample
@@ -1404,13 +1618,20 @@ function start_recording()
     state.recording_time = 0
     state.recording_level_l = 0
     state.recording_level_r = 0
+    state.recording_peak_l = 0  -- Track peak levels to detect mono
+    state.recording_peak_r = 0
     
-    local timestamp = os.date("%Y%m%d_%H%M%S")
-    local filename = timestamp .. "_strata_rec.wav"  
-    local path = _path.audio .. "strata/" .. filename
-    
+    -- Create date-organized folder structure
+    local date_folder = os.date("%Y%m%d")
+    local timestamp = os.date("%H%M%S")
+    local filename = timestamp .. "_strata_rec.wav"
+    local folder_path = _path.audio .. "strata/" .. date_folder .. "/"
+    local path = folder_path .. filename
+
+    -- Create both base and date folders
     util.make_dir(_path.audio .. "strata/")
-    
+    util.make_dir(folder_path)
+
     state.recording_path = path
     
     -- Simple stereo recording setup
@@ -1456,32 +1677,43 @@ function start_recording()
     softcut.position(2, 0)
     softcut.rec_offset(2, 0)
     
-    -- Start input monitoring for VU meters
-    engine.startInputMonitor()
-    
+    -- Start input monitoring for VU meters (using norns audio API)
+    audio.level_adc_cut(1)  -- Enable ADC monitoring
+    audio.level_cut(0.05)   -- Fast meter response
+
     -- Stop any existing recording clock
     if state.recording_clock then
         clock.cancel(state.recording_clock)
     end
-    
+
     -- Store start time
     state.recording_start_time = util.time()
-    
-    -- Timer clock - just checks for timeout
+
+    -- Start engine input monitoring (tracks peaks in SC)
+    engine.startInputMonitor()
+
+    -- Simple timer clock for recording timeout
     state.recording_clock = clock.run(function()
         while state.recording do
-            clock.sleep(0.5)  -- Check every half second
-            
+            clock.sleep(0.1)  -- Check every 100ms
+
             -- Update time from start
             state.recording_time = util.time() - state.recording_start_time
-            
+
+            -- Debug: show time every second
+            if math.floor(state.recording_time) ~= math.floor(state.recording_time - 0.1) then
+                print("Recording time: " .. string.format("%.1f", state.recording_time) .. "s")
+            end
+
             if state.recording_time >= 30 then
+                print("Recording timeout reached at 30s")
                 stop_recording()
+                break
             end
         end
         state.recording_clock = nil
     end)
-    
+
     print("Recording started: " .. filename)
     show_notification("RECORDING", 1.0)
 end
@@ -1501,10 +1733,10 @@ function cancel_recording()
     softcut.play(2, 0)
     softcut.enable(1, 0)
     softcut.enable(2, 0)
-    
-    -- Stop input monitoring
+
+    -- Stop engine monitoring
     engine.stopInputMonitor()
-    
+
     -- Stop recording clock
     if state.recording_clock then
         clock.cancel(state.recording_clock)
@@ -1520,12 +1752,51 @@ function cancel_recording()
     show_notification("CANCELLED", 1.5)
 end
 
+-- Write recording file (called after level analysis)
+function write_recording_file()
+    local duration = state.recording_time
+    local path = state.recording_path
+
+    show_notification("SAVING...", 2.0)
+
+    -- Write file based on mono/stereo detection
+    if state.recording_is_mono then
+        local voice = state.recording_mono_voice
+        print("Writing mono file from voice " .. voice .. "...")
+        softcut.buffer_write_mono(path, 0, duration, voice)
+    else
+        print("Writing stereo file...")
+        softcut.buffer_write_stereo(path, 0, duration, 1, 2)
+    end
+
+    print("Saving to: " .. path)
+
+    -- Wait for file write, then clean up and load
+    clock.sleep(duration * 0.1 + 1)  -- Wait proportional to recording length
+
+    -- Stop playback and disable softcut
+    softcut.play(1, 0)
+    softcut.play(2, 0)
+    softcut.enable(1, 0)
+    softcut.enable(2, 0)
+
+    -- Verify and load
+    if util.file_exists(path) then
+        print("File verified, loading...")
+        load_sample(path)
+        show_notification("LOADED: " .. string.format("%.1fs", duration), 2.0)
+    else
+        show_notification("SAVE FAILED", 2.0)
+        print("ERROR: File not found: " .. path)
+    end
+end
+
 -- Stop recording
 function stop_recording()
     if not state.recording then
         return
     end
-    
+
     state.recording = false
     local duration = state.recording_time
     
@@ -1534,42 +1805,20 @@ function stop_recording()
         clock.cancel(state.recording_clock)
         state.recording_clock = nil
     end
-    
+
     -- Stop recording
     softcut.rec(1, 0)
     softcut.rec(2, 0)
-    
-    -- Stop input monitoring
+
+    -- Stop engine input monitoring
     engine.stopInputMonitor()
-    
+
     print("Recording stopped after " .. string.format("%.1f", duration) .. "s")
-    show_notification("SAVING...", 2.0)
-    
-    -- Write file
-    softcut.buffer_write_stereo(state.recording_path, 0, duration, 1, 2)
-    
-    print("Saving to: " .. state.recording_path)
-    
-    -- Wait for file write, then clean up and load
-    clock.run(function()
-        clock.sleep(duration * 0.1 + 1)  -- Wait proportional to recording length
-        
-        -- Stop playback and disable
-        softcut.play(1, 0)
-        softcut.play(2, 0)
-        softcut.enable(1, 0)
-        softcut.enable(2, 0)
-        
-        -- Verify and load
-        if util.file_exists(state.recording_path) then
-            print("File verified, loading...")
-            load_sample(state.recording_path)
-            show_notification("LOADED: " .. string.format("%.1fs", duration), 2.0)
-        else
-            show_notification("SAVE FAILED", 2.0)
-            print("ERROR: File not found: " .. state.recording_path)
-        end
-    end)
+    show_notification("ANALYZING...", 1.0)
+
+    -- Request accumulated levels from engine
+    -- Response will come via /recording_levels OSC message
+    engine.getRecordingLevels()
 end
 
 -- Handle filter cutoff CC
@@ -1605,10 +1854,10 @@ function enc(n, delta)
     if n == 1 then
     -- Page navigation
     local old_page = state.current_page
-    state.current_page = util.clamp(state.current_page + delta, 1, 9)
+    state.current_page = util.clamp(state.current_page + delta, 1, 10)
     
     -- Reset parameter selection when entering LFO page
-    if state.current_page == 8 and old_page ~= 8 then
+    if state.current_page == 9 and old_page ~= 9 then
         state.lfo_selected_param = 1
         -- Also ensure lfo_selected is valid
         state.lfo_selected = util.clamp(state.lfo_selected, 1, state.lfo_count)
@@ -1696,8 +1945,10 @@ function enc(n, delta)
             engine.setLoopPoints(state.loop_start, calculate_loop_end())
             
         elseif state.selected_param == 2 then
-            -- Length (existing code)
-            local new_length = state.loop_length + (delta * 0.001)
+            -- Length with adaptive step size
+            -- Use smaller steps (<1s) for fine control, larger steps (>1s) for speed
+            local step_size = state.loop_length < 1.0 and 0.001 or 0.05
+            local new_length = state.loop_length + (delta * step_size)
             local max_length = (1.0 - state.loop_start) * state.sample_duration
             state.loop_length = util.clamp(new_length, 0.001, max_length)
             engine.setLoopPoints(state.loop_start, calculate_loop_end())
@@ -1858,7 +2109,7 @@ function enc(n, delta)
     elseif state.current_page == 5 then
         -- ENVELOPE page
         if n == 2 then
-            state.selected_param = util.wrap(state.selected_param + delta, 1, 4)
+            state.selected_param = util.wrap(state.selected_param + delta, 1, 5)
         elseif n == 3 then
             if state.selected_param == 1 then
                 state.env_attack = util.clamp(state.env_attack + (delta * 0.01), 0.001, 2.0)
@@ -1868,10 +2119,16 @@ function enc(n, delta)
                 state.env_sustain = util.clamp(state.env_sustain + (delta * 0.05), 0, 1.0)
             elseif state.selected_param == 4 then
                 state.env_release = util.clamp(state.env_release + (delta * 0.05), 0.01, 5.0)
+            elseif state.selected_param == 5 then
+                state.env_filter_mod = util.clamp(state.env_filter_mod + (delta * 0.01), 0.0, 1.0)
+                engine.setEnvFilterMod(state.env_filter_mod)
             end
-            
-            for i = 0, state.num_faders - 1 do
-                engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
+
+            -- Update envelope for ADSR parameters
+            if state.selected_param <= 4 then
+                for i = 0, state.num_faders - 1 do
+                    engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
+                end
             end
         end
         
@@ -1891,8 +2148,48 @@ function enc(n, delta)
                 update_all_notes()
             end
         end
-        
+
     elseif state.current_page == 7 then
+        -- FX page (reverb)
+        if n == 2 then
+            state.selected_param = util.wrap(state.selected_param + delta, 1, 8)
+        elseif n == 3 then
+            if state.selected_param == 1 then
+                -- Reverb Mix (1% increments)
+                state.reverb_mix = util.clamp(state.reverb_mix + (delta * 0.01), 0.0, 1.0)
+                engine.setReverbMix(state.reverb_mix)
+            elseif state.selected_param == 2 then
+                -- Reverb Time
+                state.reverb_time = util.clamp(state.reverb_time + (delta * 0.1), 0.1, 10.0)
+                engine.setReverbTime(state.reverb_time)
+            elseif state.selected_param == 3 then
+                -- Reverb Size
+                state.reverb_size = util.clamp(state.reverb_size + (delta * 0.1), 0.5, 5.0)
+                engine.setReverbSize(state.reverb_size)
+            elseif state.selected_param == 4 then
+                -- Reverb Damping (1% increments)
+                state.reverb_damping = util.clamp(state.reverb_damping + (delta * 0.01), 0.0, 1.0)
+                engine.setReverbDamping(state.reverb_damping)
+            elseif state.selected_param == 5 then
+                -- Reverb Feedback (1% increments)
+                state.reverb_feedback = util.clamp(state.reverb_feedback + (delta * 0.01), 0.0, 1.0)
+                engine.setReverbFeedback(state.reverb_feedback)
+            elseif state.selected_param == 6 then
+                -- Reverb Diffusion (1% increments)
+                state.reverb_diff = util.clamp(state.reverb_diff + (delta * 0.01), 0.0, 1.0)
+                engine.setReverbDiff(state.reverb_diff)
+            elseif state.selected_param == 7 then
+                -- Reverb Mod Depth (1% increments)
+                state.reverb_mod_depth = util.clamp(state.reverb_mod_depth + (delta * 0.01), 0.0, 1.0)
+                engine.setReverbModDepth(state.reverb_mod_depth)
+            elseif state.selected_param == 8 then
+                -- Reverb Mod Freq
+                state.reverb_mod_freq = util.clamp(state.reverb_mod_freq + (delta * 0.1), 0.1, 10.0)
+                engine.setReverbModFreq(state.reverb_mod_freq)
+            end
+        end
+
+    elseif state.current_page == 8 then
         -- MIDI settings page
         if n == 2 then
             state.selected_param = util.wrap(state.selected_param + delta, 1, 2)
@@ -1905,8 +2202,8 @@ function enc(n, delta)
                 MidiHandler.set_fader_cc_start(new_cc)
             end
         end
-        
-    elseif state.current_page == 8 then
+
+    elseif state.current_page == 9 then
         -- LFO page
         if n == 2 then
             -- E2: Select parameter
@@ -1931,7 +2228,7 @@ function enc(n, delta)
                 end
             elseif state.lfo_selected_param == 3 then
                 -- Shape
-                lfo.shape = util.wrap(lfo.shape + delta, 1, 4)
+                lfo.shape = util.wrap(lfo.shape + delta, 1, 5)
             elseif state.lfo_selected_param == 4 then
                 -- Rate mode
                 if delta ~= 0 then
@@ -1972,9 +2269,9 @@ function enc(n, delta)
                     lfo.dest_param = util.wrap(lfo.dest_param + delta, dest.param_min, dest.param_max)
                 end
             end
-        end    
-    
-    elseif state.current_page == 9 then
+        end
+
+    elseif state.current_page == 10 then
         -- SCENES page
         if n == 2 then
             state.scene_selected = util.wrap(state.scene_selected + delta, 1, 8)
@@ -2044,10 +2341,10 @@ function key(n, z)
                     show_notification("REST: " .. string.upper(state.snapshot_player.euclidean_rest_behavior), 1.5)
                     save_snapshots_to_disk()
                 end
-            elseif state.current_page == 8 then
+            elseif state.current_page == 9 then
                 -- LFO page
                 local lfo = state.lfos[state.lfo_selected]
-                
+
                 if state.lfo_selected_param == 1 then
                     lfo.enabled = not lfo.enabled
                 elseif state.lfo_selected_param == 2 then
@@ -2063,7 +2360,7 @@ function key(n, z)
                         lfo.dest_param = util.wrap(lfo.dest_param + 1, dest.param_min, dest.param_max)
                     end
                 end
-            elseif state.current_page == 9 then
+            elseif state.current_page == 10 then
                 -- SCENES page: Save scene
                 save_scene(state.scene_selected)
             end
@@ -2109,7 +2406,7 @@ function key(n, z)
                         start_snapshot_sequencer()
                     end
                 end
-            elseif state.current_page == 9 then
+            elseif state.current_page == 10 then
                 -- SCENES page
                 if state.k1_held then
                     clear_scene(state.scene_selected)
@@ -2126,14 +2423,14 @@ function redraw()
     if selecting then
         return
     end
-    
+
     screen.clear()
-    
+
     screen.level(15)
     screen.move(64, 8)
-    local pages = {"PLAY", "SAMPLE", "SNAPSHOTS", "SEQUENCER", "ENVELOPE", "SCALE", "MIDI", "LFO", "SCENES"}
+    local pages = {"PLAY", "SAMPLE", "SNAPSHOTS", "SEQUENCER", "ENVELOPE", "SCALE", "FX", "MIDI", "LFO", "SCENES"}
     screen.text_center(pages[state.current_page])
-    
+
     if state.current_page == 1 then
         draw_play_page()
     elseif state.current_page == 2 then
@@ -2147,13 +2444,15 @@ function redraw()
     elseif state.current_page == 6 then
         draw_scale_page()
     elseif state.current_page == 7 then
-        draw_midi_page()
+        draw_fx_page()
     elseif state.current_page == 8 then
-        draw_lfo_page()
+        draw_midi_page()
     elseif state.current_page == 9 then
+        draw_lfo_page()
+    elseif state.current_page == 10 then
         draw_scenes_page()
     end
-    
+
     screen.update()
 end
 
@@ -2699,18 +2998,18 @@ function draw_sequencer_page()
 end
 
 function draw_envelope_page()
-    -- Draw envelope visualization (larger, centered)
+    -- Draw envelope visualization (adjusted height to make room for 5th param)
     local env_x = 14
-    local env_y = 50
+    local env_y = 45
     local env_width = 100
-    local env_height = -30
-    
+    local env_height = -25
+
     local total_time = state.env_attack + state.env_decay + 0.2 + state.env_release
     local a_width = (state.env_attack / total_time) * env_width
     local d_width = (state.env_decay / total_time) * env_width
     local s_width = (0.2 / total_time) * env_width
     local r_width = (state.env_release / total_time) * env_width
-    
+
     screen.level(10)
     screen.move(env_x, env_y)
     screen.line(env_x + a_width, env_y + env_height)
@@ -2718,30 +3017,99 @@ function draw_envelope_page()
     screen.line(env_x + a_width + d_width + s_width, env_y + (env_height * state.env_sustain))
     screen.line(env_x + a_width + d_width + s_width + r_width, env_y)
     screen.stroke()
-    
-    -- Draw parameters horizontally at bottom with units
+
+    -- Draw ADSR parameters horizontally
     local params = {
         {label = "A", value = string.format("%.2fs", state.env_attack), x = 0},
         {label = "D", value = string.format("%.2fs", state.env_decay), x = 32},
         {label = "S", value = string.format("%.2f", state.env_sustain), x = 64},
         {label = "R", value = string.format("%.2fs", state.env_release), x = 94}
     }
-    
+
     for i = 1, 4 do
         local param = params[i]
         local is_selected = (state.selected_param == i)
-        
+
         screen.level(is_selected and 15 or 8)
-        screen.move(param.x, 60)
+        screen.move(param.x, 55)
         screen.text(param.label .. ": " .. param.value)
-        
+
         -- Draw selection indicator (underline)
         if is_selected then
             screen.level(15)
             local text_width = #(param.label .. ": " .. param.value) * 4
-            screen.move(param.x, 62)
-            screen.line(param.x + text_width, 62)
+            screen.move(param.x, 57)
+            screen.line(param.x + text_width, 57)
             screen.stroke()
+        end
+    end
+
+    -- Draw filter modulation parameter below ADSR
+    local filter_mod_percent = math.floor(state.env_filter_mod * 100)
+    local is_selected = (state.selected_param == 5)
+
+    screen.level(is_selected and 15 or 8)
+    screen.move(0, 63)
+    screen.text("Filter Mod: " .. filter_mod_percent .. "%")
+
+    if is_selected then
+        screen.level(15)
+        local text_width = #("Filter Mod: " .. filter_mod_percent .. "%") * 4
+        screen.move(0, 65)
+        screen.line(text_width, 65)
+        screen.stroke()
+    end
+end
+
+function draw_fx_page()
+    -- Title
+    screen.level(15)
+    screen.move(4, 12)
+    screen.text("REVERB")
+
+    -- Dividing line
+    screen.level(4)
+    screen.move(4, 14)
+    screen.line(124, 14)
+    screen.stroke()
+
+    -- Draw parameters with scrolling
+    local params = {"Mix", "Time", "Size", "Damping", "Feedback", "Diffusion", "Mod Depth", "Mod Freq"}
+    local param_start_y = 22
+    local param_spacing = 7
+    local visible_params = 5
+
+    local scroll_offset = 0
+    if state.selected_param > visible_params then
+        scroll_offset = -(state.selected_param - visible_params) * param_spacing
+    end
+
+    for i = 1, 8 do
+        local y = param_start_y + (i * param_spacing) + scroll_offset
+
+        if y > 16 and y < 64 then
+            screen.level(state.selected_param == i and 15 or 6)
+            screen.move(4, y)
+            screen.text(params[i] .. ":")
+
+            screen.move(70, y)
+            if i == 1 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_mix * 100)))
+            elseif i == 2 then
+                screen.text(string.format("%.1fs", state.reverb_time))
+            elseif i == 3 then
+                screen.text(string.format("%.1f", state.reverb_size))
+            elseif i == 4 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_damping * 100)))
+            elseif i == 5 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_feedback * 100)))
+            elseif i == 6 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_diff * 100)))
+            elseif i == 7 then
+                screen.text(string.format("%d%%", math.floor(state.reverb_mod_depth * 100)))
+            elseif i == 8 then
+                screen.text(string.format("%.1fHz", state.reverb_mod_freq))
+            end
         end
     end
 end
