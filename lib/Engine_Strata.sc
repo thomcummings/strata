@@ -237,18 +237,52 @@ Engine_Strata : CroneEngine {
         // Sample loading
         this.addCommand(\loadSample, "s", { arg msg;
             var path = msg[1].asString;
+            var soundFile;
+
             postln("Engine loading sample: " ++ path);
-            buffer.allocRead(path, completionMessage: {
-                var duration = buffer.numFrames / context.server.sampleRate;
-                
-                postln("Sample loaded: " ++ path ++ " frames=" ++ buffer.numFrames);
-                postln("Duration: " ++ duration ++ " seconds");
-                
-                // Send duration to Lua via OSC
-                context.server.addr.sendMsg("/sample_duration", duration);
-                
-                // Trigger waveform generation
-                this.generateWaveform(buffer);
+
+            // Check file info first to detect mono vs stereo
+            soundFile = SoundFile.new;
+            if(soundFile.openRead(path), {
+                var numChannels = soundFile.numChannels;
+                var numFrames = soundFile.numFrames;
+                var duration;
+
+                soundFile.close;
+
+                postln("Sample info: " ++ numChannels ++ " channels, " ++ numFrames ++ " frames, " ++ (numFrames / context.server.sampleRate) ++ "s");
+
+                // Handle mono files: read channel 0 into both buffer channels
+                if(numChannels == 1, {
+                    postln("Loading mono file (will be converted to stereo during playback)...");
+                    buffer.allocReadChannel(path, 0, -1, [0, 0], {
+                        duration = buffer.numFrames / context.server.sampleRate;
+                        postln("Mono sample loaded: " ++ path);
+                        postln("Buffer frames=" ++ buffer.numFrames ++ " channels=" ++ buffer.numChannels ++ " Duration=" ++ duration ++ "s");
+
+                        // Send duration to Lua via OSC
+                        context.server.addr.sendMsg("/sample_duration", duration);
+
+                        // Trigger waveform generation
+                        this.generateWaveform(buffer);
+                    });
+                }, {
+                    // Stereo file: read normally
+                    postln("Loading stereo file...");
+                    buffer.allocRead(path, completionMessage: {
+                        duration = buffer.numFrames / context.server.sampleRate;
+                        postln("Stereo sample loaded: " ++ path);
+                        postln("Buffer frames=" ++ buffer.numFrames ++ " channels=" ++ buffer.numChannels ++ " Duration=" ++ duration ++ "s");
+
+                        // Send duration to Lua via OSC
+                        context.server.addr.sendMsg("/sample_duration", duration);
+
+                        // Trigger waveform generation
+                        this.generateWaveform(buffer);
+                    });
+                });
+            }, {
+                postln("ERROR: Could not open file: " ++ path);
             });
         });
         
