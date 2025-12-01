@@ -1734,15 +1734,8 @@ function cancel_recording()
     softcut.enable(1, 0)
     softcut.enable(2, 0)
 
-    -- Stop input level polls
-    if state.recording_poll then
-        state.recording_poll:stop()
-        state.recording_poll = nil
-    end
-    if state.recording_poll_r then
-        state.recording_poll_r:stop()
-        state.recording_poll_r = nil
-    end
+    -- Stop engine monitoring
+    engine.stopInputMonitor()
 
     -- Stop recording clock
     if state.recording_clock then
