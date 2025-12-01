@@ -64,6 +64,12 @@ local state = {
     sample_gain = 1.0,  -- Add this (0.1 to 2.0 range, 1.0 = unity)
     trigger_mode = false,
 
+    -- Play mode (how voices trigger when morphing to snapshots)
+    play_mode = "chord",  -- "chord", "strum", "arp"
+    play_strum_time = 0.05,  -- Time between each voice in strum mode (seconds)
+    play_arp_rate = 0.25,  -- Time between arp notes (seconds)
+    play_arp_pattern = "up",  -- "up", "down", "updown", "random"
+
     -- Envelope parameters
     env_attack = 0.1,
     env_decay = 0.1,
@@ -239,6 +245,20 @@ local state = {
     keyboard = {
         next_voice = 0,  -- Round-robin voice allocation (0-7)
         active_notes = {}  -- Maps MIDI note number to voice index
+    },
+
+    -- Arp mode state
+    arp = {
+        active = false,
+        voices = {},  -- List of voice indices to arpeggiate
+        current_index = 1,
+        clock_id = nil
+    },
+
+    -- Strum mode state
+    strum = {
+        pending_triggers = {},  -- Voices waiting to be triggered
+        trigger_times = {}  -- When each voice should trigger
     },
 }
 
@@ -760,20 +780,142 @@ function start_morph(to_idx)
     end
     
     state.snapshot_current = to_idx
-    
+
     print("Morphing to snapshot " .. to_idx)
+
+    -- Set up strum mode trigger times
+    if state.play_mode == "strum" then
+        setup_strum_triggers()
+    end
+
+    -- Stop arpeggiator if active (will restart when morph completes in arp mode)
+    if state.play_mode == "arp" then
+        stop_arpeggiator()
+    end
+end
+
+-- Set up strum mode trigger times
+function setup_strum_triggers()
+    -- Clear previous triggers
+    state.strum.trigger_times = {}
+
+    -- Collect voices that will be above threshold
+    local voices_to_trigger = {}
+    for i = 0, 7 do
+        if state.morphing.to_positions[i] > state.gate_threshold and not state.faders[i].active then
+            table.insert(voices_to_trigger, i)
+        end
+    end
+
+    -- Sort by target position (highest first for downward strum)
+    table.sort(voices_to_trigger, function(a, b)
+        return state.morphing.to_positions[a] > state.morphing.to_positions[b]
+    end)
+
+    -- Schedule triggers with strum delay
+    local base_time = util.time()
+    for idx, voice in ipairs(voices_to_trigger) do
+        state.strum.trigger_times[voice] = base_time + ((idx - 1) * state.play_strum_time)
+    end
+end
+
+-- Start arpeggiator
+function start_arpeggiator()
+    -- Stop existing arp if running
+    stop_arpeggiator()
+
+    -- Collect voices above threshold
+    state.arp.voices = {}
+    for i = 0, 7 do
+        if state.faders[i].position > state.gate_threshold then
+            table.insert(state.arp.voices, i)
+        end
+    end
+
+    -- Sort by position or pattern
+    if state.play_arp_pattern == "down" then
+        table.sort(state.arp.voices, function(a, b)
+            return state.faders[a].position > state.faders[b].position
+        end)
+    else  -- "up", "updown", "random"
+        table.sort(state.arp.voices, function(a, b)
+            return state.faders[a].position < state.faders[b].position
+        end)
+    end
+
+    if #state.arp.voices > 0 then
+        state.arp.active = true
+        state.arp.current_index = 1
+        -- Start arp clock
+        state.arp.clock_id = clock.run(arpeggiator_clock)
+    end
+end
+
+-- Stop arpeggiator
+function stop_arpeggiator()
+    if state.arp.clock_id then
+        clock.cancel(state.arp.clock_id)
+        state.arp.clock_id = nil
+    end
+
+    -- Release all currently active arpeggiated voices
+    for _, voice_idx in ipairs(state.arp.voices) do
+        if state.faders[voice_idx].active then
+            release_note(voice_idx)
+        end
+    end
+
+    state.arp.active = false
+    state.arp.voices = {}
+end
+
+-- Arpeggiator clock
+function arpeggiator_clock()
+    while state.arp.active and #state.arp.voices > 0 do
+        -- Release previous note
+        if state.arp.current_index > 1 then
+            local prev_idx = state.arp.voices[state.arp.current_index - 1]
+            if state.faders[prev_idx].active then
+                release_note(prev_idx)
+            end
+        elseif state.arp.current_index == 1 and #state.arp.voices > 0 then
+            -- Release the last voice when wrapping around
+            local last_idx = state.arp.voices[#state.arp.voices]
+            if state.faders[last_idx].active then
+                release_note(last_idx)
+            end
+        end
+
+        -- Trigger current note
+        local voice_idx = state.arp.voices[state.arp.current_index]
+        if not state.faders[voice_idx].active then
+            trigger_note(voice_idx)
+        end
+
+        -- Advance to next voice
+        if state.play_arp_pattern == "updown" then
+            -- TODO: implement up-down pattern
+            state.arp.current_index = (state.arp.current_index % #state.arp.voices) + 1
+        elseif state.play_arp_pattern == "random" then
+            state.arp.current_index = math.random(1, #state.arp.voices)
+        else  -- "up" or "down"
+            state.arp.current_index = (state.arp.current_index % #state.arp.voices) + 1
+        end
+
+        clock.sleep(state.play_arp_rate)
+    end
 end
 
 function jump_to_snapshot(idx)
     if state.snapshots[idx].empty then
         return
     end
-    
+
     -- Stop sequencer if playing
     if state.snapshot_player.playing then
         stop_snapshot_sequencer()
     end
-    
+
     start_morph(idx)
 end
 
@@ -967,7 +1109,13 @@ function save_scene(slot)
         xfade_time = state.xfade_time,
         sample_duration = state.sample_duration,
         trigger_mode = state.trigger_mode,
-        
+
+        -- Play mode
+        play_mode = state.play_mode,
+        play_strum_time = state.play_strum_time,
+        play_arp_rate = state.play_arp_rate,
+        play_arp_pattern = state.play_arp_pattern,
+
         -- Envelope
         env_attack = state.env_attack,
         env_decay = state.env_decay,
@@ -1085,7 +1233,13 @@ function load_scene(slot)
     state.xfade_time = scene.xfade_time
     state.sample_duration = scene.sample_duration
     state.trigger_mode = scene.trigger_mode or false
-    
+
+    -- Load play mode (with defaults for backward compatibility)
+    state.play_mode = scene.play_mode or "chord"
+    state.play_strum_time = scene.play_strum_time or 0.05
+    state.play_arp_rate = scene.play_arp_rate or 0.25
+    state.play_arp_pattern = scene.play_arp_pattern or "up"
+
     -- Load envelope
     state.env_attack = scene.env_attack
     state.env_decay = scene.env_decay
@@ -1360,11 +1514,32 @@ function morph_clock()
                         engine.setFaderPos(i, target)
                     end
                     
-                    -- Handle gate threshold crossing
-                    if target > state.gate_threshold and not state.faders[i].active then
-                        trigger_note(i)
-                    elseif target <= state.gate_threshold and state.faders[i].active then
-                        release_note(i)
+                    -- Handle gate threshold crossing (mode-dependent)
+                    if state.play_mode == "chord" then
+                        -- Chord mode: trigger immediately
+                        if target > state.gate_threshold and not state.faders[i].active then
+                            trigger_note(i)
+                        elseif target <= state.gate_threshold and state.faders[i].active then
+                            release_note(i)
+                        end
+                    elseif state.play_mode == "strum" then
+                        -- Strum mode: check if this voice should trigger now
+                        if state.strum.trigger_times[i] then
+                            if util.time() >= state.strum.trigger_times[i] and not state.faders[i].active then
+                                trigger_note(i)
+                                state.strum.trigger_times[i] = nil
+                            end
+                        end
+                        -- Always handle releases immediately
+                        if target <= state.gate_threshold and state.faders[i].active then
+                            release_note(i)
+                        end
+                    elseif state.play_mode == "arp" then
+                        -- Arp mode: don't trigger on threshold cross, arp clock handles it
+                        -- But do handle releases
+                        if target <= state.gate_threshold and state.faders[i].active then
+                            release_note(i)
+                        end
                     end
                 end
             end
@@ -1372,6 +1547,11 @@ function morph_clock()
             -- Morph complete
             if state.morphing.progress >= 1.0 then
                 state.morphing.active = false
+
+                -- Arp mode: start arpeggiator with active voices
+                if state.play_mode == "arp" then
+                    start_arpeggiator()
+                end
             end
         end
     end
@@ -1875,6 +2055,27 @@ function enc(n, delta)
                     state.master_filter_resonance,
                     state.master_filter_type
                 )
+            end
+        elseif state.k3_held then
+            -- K3+E2: Change play mode
+            if delta ~= 0 then
+                local modes = {"chord", "strum", "arp"}
+                local current_idx = 1
+                for i, m in ipairs(modes) do
+                    if m == state.play_mode then
+                        current_idx = i
+                        break
+                    end
+                end
+                local next_idx = ((current_idx - 1 + (delta > 0 and 1 or -1)) % 3) + 1
+                state.play_mode = modes[next_idx]
+
+                -- Stop arpeggiator if switching away from arp mode
+                if state.play_mode ~= "arp" and state.arp.active then
+                    stop_arpeggiator()
+                end
+
+                show_notification("PLAY: " .. string.upper(state.play_mode), 1.5)
             end
         else
             -- E2: Octave offset (existing code)
@@ -2507,8 +2708,19 @@ function draw_play_page()
     
     screen.level(10)
     screen.move(4, 64)
-    screen.text(state.current_scale .. " " .. ScaleSystem.get_root_name(state.root_note))
-    
+    if state.k3_held then
+        -- Show play mode when K3 is held
+        screen.text("Mode: " .. string.upper(state.play_mode))
+    else
+        screen.text(state.current_scale .. " " .. ScaleSystem.get_root_name(state.root_note))
+    end
+
+    -- Show play mode indicator next to scale
+    screen.level(6)
+    screen.move(4, 56)
+    local mode_display = state.play_mode == "chord" and "CHD" or (state.play_mode == "strum" and "STM" or "ARP")
+    screen.text(mode_display)
+
     -- Show morph progress in bottom right
     if state.morphing.active then
         screen.level(15)
