@@ -313,38 +313,39 @@ Engine_Strata : CroneEngine {
 
                 postln("Sample info: " ++ numChannels ++ " channels, " ++ numFrames ++ " frames, " ++ (numFrames / context.server.sampleRate) ++ "s");
 
-                // Handle mono files: allocate stereo buffer then read mono channel to both sides
+                // Free existing buffer first
+                buffer.free;
+
+                // Handle mono files: read mono channel into both buffer channels
                 if(numChannels == 1, {
                     postln("Loading mono file (will be converted to stereo during playback)...");
 
-                    // Allocate stereo buffer with correct size
-                    buffer.alloc(context.server, numFrames, 2, {
-                        // Read mono file channel 0 into both buffer channels [0, 0]
-                        buffer.readChannel(path, 0, -1, 0, false, [0, 0], {
-                            duration = buffer.numFrames / context.server.sampleRate;
-                            postln("Mono sample loaded: " ++ path);
-                            postln("Buffer frames=" ++ buffer.numFrames ++ " channels=" ++ buffer.numChannels ++ " Duration=" ++ duration ++ "s");
-
-                            // Send duration to Lua via OSC
-                            context.server.addr.sendMsg("/sample_duration", duration);
-
-                            // Trigger waveform generation
-                            this.generateWaveform(buffer);
-                        });
-                    });
-                }, {
-                    // Stereo file: read normally
-                    postln("Loading stereo file...");
-                    buffer.allocRead(path, completionMessage: {
-                        duration = buffer.numFrames / context.server.sampleRate;
-                        postln("Stereo sample loaded: " ++ path);
-                        postln("Buffer frames=" ++ buffer.numFrames ++ " channels=" ++ buffer.numChannels ++ " Duration=" ++ duration ++ "s");
+                    // Use Buffer.readChannel class method to allocate and read in one operation
+                    // channels: [0, 0] means read source channel 0 into both dest channels 0 and 1
+                    buffer = Buffer.readChannel(context.server, path, 0, -1, [0, 0], { arg buf;
+                        duration = buf.numFrames / context.server.sampleRate;
+                        postln("Mono sample loaded: " ++ path);
+                        postln("Buffer frames=" ++ buf.numFrames ++ " channels=" ++ buf.numChannels ++ " Duration=" ++ duration ++ "s");
 
                         // Send duration to Lua via OSC
                         context.server.addr.sendMsg("/sample_duration", duration);
 
                         // Trigger waveform generation
-                        this.generateWaveform(buffer);
+                        this.generateWaveform(buf);
+                    });
+                }, {
+                    // Stereo file: read normally
+                    postln("Loading stereo file...");
+                    buffer = Buffer.read(context.server, path, action: { arg buf;
+                        duration = buf.numFrames / context.server.sampleRate;
+                        postln("Stereo sample loaded: " ++ path);
+                        postln("Buffer frames=" ++ buf.numFrames ++ " channels=" ++ buf.numChannels ++ " Duration=" ++ duration ++ "s");
+
+                        // Send duration to Lua via OSC
+                        context.server.addr.sendMsg("/sample_duration", duration);
+
+                        // Trigger waveform generation
+                        this.generateWaveform(buf);
                     });
                 });
             }, {
