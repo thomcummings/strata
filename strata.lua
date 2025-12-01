@@ -793,11 +793,11 @@ end
 -- Calculate step duration based on mode
 function get_play_mode_step_duration()
     if state.play_mode.mode == "strum" then
-        return state.play_mode.strum_rate_ms / 1000.0
+        return math.max(state.play_mode.strum_rate_ms / 1000.0, 0.01)
     elseif state.play_mode.mode == "arp" then
-        local bpm = state.snapshot_player.bpm
-        local beats = state.lfo_bpm_divisions[state.play_mode.arp_rate_div].beats
-        return (beats / bpm) * 60.0
+        local bpm = math.max(state.snapshot_player.bpm or 120, 1)  -- Prevent division by zero
+        local beats = state.lfo_bpm_divisions[state.play_mode.arp_rate_div].beats or 1.0
+        return math.max((beats / bpm) * 60.0, 0.01)  -- Minimum 10ms
     end
     return 0.1  -- Fallback
 end
