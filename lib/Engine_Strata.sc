@@ -315,16 +315,22 @@ Engine_Strata : CroneEngine {
                 // Handle mono files by converting to stereo
                 if(numChannels == 1, {
                     postln("Converting mono to stereo...");
-                    // Use allocReadChannel to reallocate buffer to file size
-                    buffer.allocReadChannel(path, 0, -1, [0, 0], {
-                        postln("Mono sample converted and loaded: " ++ path);
-                        postln("Buffer frames=" ++ buffer.numFrames ++ " Duration=" ++ fileDuration ++ "s");
 
-                        // Send actual file duration to Lua via OSC
-                        NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
+                    // Reallocate buffer to exact file size (stereo)
+                    buffer.alloc(context.server, fileFrames, 2, {
+                        // Read mono channel into both stereo channels
+                        buffer.readChannel(path, 0, -1, 0, 0, false, {
+                            buffer.readChannel(path, 0, -1, 1, 0, false, {
+                                postln("Mono sample converted and loaded: " ++ path);
+                                postln("Buffer frames=" ++ buffer.numFrames ++ " Duration=" ++ fileDuration ++ "s");
 
-                        // Trigger waveform generation with actual file frames
-                        this.generateWaveform(buffer, fileFrames);
+                                // Send actual file duration to Lua via OSC
+                                NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
+
+                                // Trigger waveform generation with actual file frames
+                                this.generateWaveform(buffer, fileFrames);
+                            });
+                        });
                     });
                 }, {
                     // Load stereo file normally
