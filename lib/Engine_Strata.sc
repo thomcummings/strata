@@ -298,7 +298,7 @@ Engine_Strata : CroneEngine {
         // Sample loading with mono-to-stereo conversion
         this.addCommand(\loadSample, "s", { arg msg;
             var path = msg[1].asString;
-            var soundFile;
+            var soundFile, oldBuffer;
 
             postln("Engine loading sample: " ++ path);
 
@@ -313,8 +313,8 @@ Engine_Strata : CroneEngine {
 
                 postln("Sample info: " ++ numChannels ++ " channels, " ++ numFrames ++ " frames, " ++ (numFrames / context.server.sampleRate) ++ "s");
 
-                // Free existing buffer first
-                buffer.free;
+                // Keep reference to old buffer (don't free yet - voices still using it)
+                oldBuffer = buffer;
 
                 // Handle mono files: read mono channel into both buffer channels
                 if(numChannels == 1, {
@@ -331,6 +331,9 @@ Engine_Strata : CroneEngine {
                         8.do({ arg i;
                             synths[i].set(\bufnum, buf.bufnum);
                         });
+
+                        // Now safe to free old buffer (voices updated to new buffer)
+                        oldBuffer.free;
 
                         // Send duration to Lua via OSC (use NetAddr for norns)
                         NetAddr("localhost", 10111).sendMsg("/sample_duration", duration);
@@ -350,6 +353,9 @@ Engine_Strata : CroneEngine {
                         8.do({ arg i;
                             synths[i].set(\bufnum, buf.bufnum);
                         });
+
+                        // Now safe to free old buffer (voices updated to new buffer)
+                        oldBuffer.free;
 
                         // Send duration to Lua via OSC (use NetAddr for norns)
                         NetAddr("localhost", 10111).sendMsg("/sample_duration", duration);
