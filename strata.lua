@@ -818,13 +818,20 @@ function trigger_play_mode_note(fader_idx)
     -- Use stored target position if available, otherwise use current position
     local position = state.play_mode.target_positions[fader_idx] or state.faders[fader_idx].position
     if position > state.gate_threshold then
-        engine.trigger(fader_idx, position)
+        -- Temporarily set fader position to target for amplitude control
+        local old_pos = state.faders[fader_idx].position
+        state.faders[fader_idx].position = position
+
+        -- Use existing trigger_note function which handles frequency calculation and engine calls
+        trigger_note(fader_idx)
+
+        -- Note: Don't restore old position - let it stay at target for play mode
     end
 end
 
 -- Release note for a specific fader
 function release_play_mode_note(fader_idx)
-    engine.release(fader_idx)
+    release_note(fader_idx)
 end
 
 -- Main playback clock
@@ -967,19 +974,24 @@ function start_morph(to_idx)
     state.morphing.to_positions = state.snapshots[to_idx].positions
     state.morphing.start_time = util.time()
     state.morphing.progress = 0
-    state.morphing.active = true
-    
+
     -- Reset manual override flags
     for i = 0, 7 do
         state.morphing.manual_override[i] = false
     end
-    
+
     state.snapshot_current = to_idx
 
     print("Morphing to snapshot " .. to_idx)
 
-    -- Trigger play mode if strum or arp is enabled
-    if state.play_mode.mode == "strum" or (state.play_mode.mode == "arp" and state.play_mode.arp_source == "snapshot") then
+    -- Check if we should use play mode or normal morphing
+    local use_play_mode = state.play_mode.mode == "strum" or
+                          (state.play_mode.mode == "arp" and state.play_mode.arp_source == "snapshot")
+
+    if use_play_mode then
+        -- In strum/arp mode: skip normal morphing, let play mode handle it
+        state.morphing.active = false
+
         -- Get active faders and their target positions from the snapshot
         local active_faders = {}
         local target_positions = {}
@@ -993,6 +1005,9 @@ function start_morph(to_idx)
         if #active_faders > 0 then
             start_play_mode(active_faders, target_positions)
         end
+    else
+        -- Normal chord mode: use standard morphing
+        state.morphing.active = true
     end
 end
 
