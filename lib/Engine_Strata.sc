@@ -312,25 +312,20 @@ Engine_Strata : CroneEngine {
 
                 postln("Sample info: " ++ numChannels ++ " channels, " ++ fileFrames ++ " frames, " ++ fileDuration ++ "s");
 
-                // Handle mono files by converting to stereo
+                // Handle mono files - load as mono, playback converts to stereo
                 if(numChannels == 1, {
-                    postln("Converting mono to stereo...");
+                    postln("Loading mono file (will be converted to stereo during playback)...");
 
-                    // Reallocate buffer to exact file size (stereo)
-                    buffer.alloc(context.server, fileFrames, 2, {
-                        // Read mono channel into both stereo channels
-                        buffer.readChannel(path, 0, -1, 0, 0, false, {
-                            buffer.readChannel(path, 0, -1, 1, 0, false, {
-                                postln("Mono sample converted and loaded: " ++ path);
-                                postln("Buffer frames=" ++ buffer.numFrames ++ " Duration=" ++ fileDuration ++ "s");
+                    // Load mono file into mono buffer
+                    buffer.allocRead(path, completionMessage: {
+                        postln("Mono sample loaded: " ++ path);
+                        postln("Buffer frames=" ++ buffer.numFrames ++ " channels=" ++ buffer.numChannels ++ " Duration=" ++ fileDuration ++ "s");
 
-                                // Send actual file duration to Lua via OSC
-                                NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
+                        // Send actual file duration to Lua via OSC
+                        NetAddr("localhost", 10111).sendMsg("/sample_duration", fileDuration);
 
-                                // Trigger waveform generation with actual file frames
-                                this.generateWaveform(buffer, fileFrames);
-                            });
-                        });
+                        // Trigger waveform generation with actual file frames
+                        this.generateWaveform(buffer, fileFrames);
                     });
                 }, {
                     // Load stereo file normally
