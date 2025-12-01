@@ -237,6 +237,7 @@ local state = {
         target_positions = {},  -- Target positions for each fader (for strum/arp from snapshots)
         direction = 1,  -- For updown pattern (1 or -1)
         clock_id = nil,
+        initialized = false,  -- Prevent starting before clocks are ready
 
         -- Selected parameter for UI
         selected_param = 1
@@ -876,6 +877,11 @@ end
 
 -- Start play mode (called when snapshot triggers or arp toggled)
 function start_play_mode(source_faders, target_positions)
+    -- Don't start if not initialized yet
+    if not state.play_mode.initialized then
+        return
+    end
+
     -- Capture fader positions
     state.play_mode.active_faders = source_faders or get_active_faders()
 
@@ -1569,6 +1575,9 @@ function init()
             redraw()
         end
     end)
+
+    -- Enable play mode now that everything is initialized
+    state.play_mode.initialized = true
 end
 
 -- Morph clock - handles interpolation
