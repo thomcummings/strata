@@ -1291,6 +1291,9 @@ function init()
         engine.setReverbModDepth(state.reverb_mod_depth)
         engine.setReverbModFreq(state.reverb_mod_freq)
 
+        -- Set master amp (ensure output is enabled on startup)
+        engine.setMasterAmp(1)
+
         -- Set envelope for all voices
         for i = 0, state.num_faders - 1 do
             engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
@@ -1605,7 +1608,10 @@ function start_recording()
     if state.snapshot_player.playing then
         stop_snapshot_sequencer()
     end
-    
+
+    -- Mute engine output during recording (prevent loaded sample from playing)
+    engine.setMasterAmp(0)
+
     -- Save current state to restore if cancelled
     state.recording_saved_path = state.sample_path
     state.recording_saved_waveform = {}
@@ -1737,6 +1743,9 @@ function cancel_recording()
     -- Stop engine monitoring
     engine.stopInputMonitor()
 
+    -- Restore engine output (unmute)
+    engine.setMasterAmp(1)
+
     -- Stop recording clock
     if state.recording_clock then
         clock.cancel(state.recording_clock)
@@ -1812,6 +1821,9 @@ function stop_recording()
 
     -- Stop engine input monitoring
     engine.stopInputMonitor()
+
+    -- Restore engine output (unmute)
+    engine.setMasterAmp(1)
 
     print("Recording stopped after " .. string.format("%.1f", duration) .. "s")
     show_notification("ANALYZING...", 1.0)
