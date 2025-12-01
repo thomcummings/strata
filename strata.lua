@@ -1243,8 +1243,31 @@ function init()
         elseif path == "/sample_duration" then
             state.sample_duration = args[1]
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
+        elseif path == "/recording_levels" then
+            -- Receive accumulated peak levels from engine
+            local peakL = args[1]
+            local peakR = args[2]
+            print("Received levels: L=" .. string.format("%.3f", peakL) ..
+                  " R=" .. string.format("%.3f", peakR))
+
+            -- Determine mono/stereo with threshold
+            local threshold = 0.01
+            local hasLeft = peakL > threshold
+            local hasRight = peakR > threshold
+
+            -- Store for use in file writing
+            state.recording_is_mono = hasLeft ~= hasRight
+            state.recording_mono_voice = hasLeft and 1 or 2
+
+            print("Detection: " .. (state.recording_is_mono and "MONO" or "STEREO"))
+            if state.recording_is_mono then
+                print("Mono source: " .. (state.recording_mono_voice == 1 and "LEFT" or "RIGHT"))
+            end
+
+            -- Trigger the actual file write
+            clock.run(write_recording_file)
         end
-        -- Note: Input levels now monitored via norns polls (see start_recording)
+        -- Note: Recording levels monitored via SC control buses
     end
     
     -- Wait for engine to be ready
@@ -1665,26 +1688,11 @@ function start_recording()
 
     -- Store start time
     state.recording_start_time = util.time()
-    print("Recording start time: " .. string.format("%.3f", state.recording_start_time))
 
-    -- Poll input levels using norns audio API
-    state.recording_poll = poll.set("input_level_in_l")
-    state.recording_poll.callback = function(val)
-        state.recording_level_l = val
-        state.recording_peak_l = math.max(state.recording_peak_l, val)
-    end
-    state.recording_poll.time = 1/30  -- 30Hz
-    state.recording_poll:start()
+    -- Start engine input monitoring (tracks peaks in SC)
+    engine.startInputMonitor()
 
-    state.recording_poll_r = poll.set("input_level_in_r")
-    state.recording_poll_r.callback = function(val)
-        state.recording_level_r = val
-        state.recording_peak_r = math.max(state.recording_peak_r, val)
-    end
-    state.recording_poll_r.time = 1/30  -- 30Hz
-    state.recording_poll_r:start()
-
-    -- Timer clock for recording timeout
+    -- Simple timer clock for recording timeout
     state.recording_clock = clock.run(function()
         while state.recording do
             clock.sleep(0.1)  -- Check every 100ms
@@ -1692,16 +1700,15 @@ function start_recording()
             -- Update time from start
             state.recording_time = util.time() - state.recording_start_time
 
-            -- Debug: show time and peaks every second
+            -- Debug: show time every second
             if math.floor(state.recording_time) ~= math.floor(state.recording_time - 0.1) then
-                print("Recording time: " .. string.format("%.1f", state.recording_time) .. "s " ..
-                      "Peaks: L=" .. string.format("%.3f", state.recording_peak_l) ..
-                      " R=" .. string.format("%.3f", state.recording_peak_r))
+                print("Recording time: " .. string.format("%.1f", state.recording_time) .. "s")
             end
 
             if state.recording_time >= 30 then
                 print("Recording timeout reached at 30s")
                 stop_recording()
+                break
             end
         end
         state.recording_clock = nil
@@ -1752,12 +1759,51 @@ function cancel_recording()
     show_notification("CANCELLED", 1.5)
 end
 
+-- Write recording file (called after level analysis)
+function write_recording_file()
+    local duration = state.recording_time
+    local path = state.recording_path
+
+    show_notification("SAVING...", 2.0)
+
+    -- Write file based on mono/stereo detection
+    if state.recording_is_mono then
+        local voice = state.recording_mono_voice
+        print("Writing mono file from voice " .. voice .. "...")
+        softcut.buffer_write_mono(path, 0, duration, voice)
+    else
+        print("Writing stereo file...")
+        softcut.buffer_write_stereo(path, 0, duration, 1, 2)
+    end
+
+    print("Saving to: " .. path)
+
+    -- Wait for file write, then clean up and load
+    clock.sleep(duration * 0.1 + 1)  -- Wait proportional to recording length
+
+    -- Stop playback and disable softcut
+    softcut.play(1, 0)
+    softcut.play(2, 0)
+    softcut.enable(1, 0)
+    softcut.enable(2, 0)
+
+    -- Verify and load
+    if util.file_exists(path) then
+        print("File verified, loading...")
+        load_sample(path)
+        show_notification("LOADED: " .. string.format("%.1fs", duration), 2.0)
+    else
+        show_notification("SAVE FAILED", 2.0)
+        print("ERROR: File not found: " .. path)
+    end
+end
+
 -- Stop recording
 function stop_recording()
     if not state.recording then
         return
     end
-    
+
     state.recording = false
     local duration = state.recording_time
     
@@ -1767,68 +1813,19 @@ function stop_recording()
         state.recording_clock = nil
     end
 
-    -- Stop input level polls
-    if state.recording_poll then
-        state.recording_poll:stop()
-        state.recording_poll = nil
-    end
-    if state.recording_poll_r then
-        state.recording_poll_r:stop()
-        state.recording_poll_r = nil
-    end
-
     -- Stop recording
     softcut.rec(1, 0)
     softcut.rec(2, 0)
 
+    -- Stop engine input monitoring
+    engine.stopInputMonitor()
+
     print("Recording stopped after " .. string.format("%.1f", duration) .. "s")
-    show_notification("SAVING...", 2.0)
+    show_notification("ANALYZING...", 1.0)
 
-    -- Detect mono recording based on peak levels
-    local mono_threshold = 0.02  -- Minimum level to consider channel active
-    local is_left_active = state.recording_peak_l > mono_threshold
-    local is_right_active = state.recording_peak_r > mono_threshold
-
-    print("Peak levels: L=" .. string.format("%.3f", state.recording_peak_l) ..
-          " R=" .. string.format("%.3f", state.recording_peak_r))
-
-    -- Write file based on detected input configuration
-    if is_left_active and not is_right_active then
-        -- Only left channel active - write as mono
-        print("Detected mono (left only), writing mono file...")
-        softcut.buffer_write_mono(state.recording_path, 0, duration, 1)
-    elseif is_right_active and not is_left_active then
-        -- Only right channel active - write as mono
-        print("Detected mono (right only), writing mono file...")
-        softcut.buffer_write_mono(state.recording_path, 0, duration, 2)
-    else
-        -- Both channels active or both silent - write as stereo
-        print("Writing stereo file...")
-        softcut.buffer_write_stereo(state.recording_path, 0, duration, 1, 2)
-    end
-
-    print("Saving to: " .. state.recording_path)
-    
-    -- Wait for file write, then clean up and load
-    clock.run(function()
-        clock.sleep(duration * 0.1 + 1)  -- Wait proportional to recording length
-        
-        -- Stop playback and disable
-        softcut.play(1, 0)
-        softcut.play(2, 0)
-        softcut.enable(1, 0)
-        softcut.enable(2, 0)
-        
-        -- Verify and load
-        if util.file_exists(state.recording_path) then
-            print("File verified, loading...")
-            load_sample(state.recording_path)
-            show_notification("LOADED: " .. string.format("%.1fs", duration), 2.0)
-        else
-            show_notification("SAVE FAILED", 2.0)
-            print("ERROR: File not found: " .. state.recording_path)
-        end
-    end)
+    -- Request accumulated levels from engine
+    -- Response will come via /recording_levels OSC message
+    engine.getRecordingLevels()
 end
 
 -- Handle filter cutoff CC
