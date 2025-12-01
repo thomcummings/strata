@@ -18,6 +18,8 @@ MidiHandler.on_fader = nil
 MidiHandler.on_filter_cutoff = nil
 MidiHandler.on_filter_resonance = nil
 MidiHandler.on_voice_filter_offset = nil
+MidiHandler.on_note_on = nil
+MidiHandler.on_note_off = nil
 
 function MidiHandler.init()
     -- Connect to all MIDI devices
@@ -38,14 +40,22 @@ end
 
 function MidiHandler.process_midi(data)
     local msg = midi.to_msg(data)
-    
+
     -- Only process messages on our channel
     if msg.ch ~= MidiHandler.midi_channel then
         return
     end
-    
+
     if msg.type == "cc" then
         MidiHandler.process_cc(msg.cc, msg.val)
+    elseif msg.type == "note_on" then
+        if MidiHandler.on_note_on then
+            MidiHandler.on_note_on(msg.note, msg.vel)
+        end
+    elseif msg.type == "note_off" then
+        if MidiHandler.on_note_off then
+            MidiHandler.on_note_off(msg.note, msg.vel)
+        end
     end
 end
 
