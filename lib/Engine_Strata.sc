@@ -12,6 +12,8 @@ Engine_Strata : CroneEngine {
     var <reverbSynth;
     var voiceBus;
     var filterBus;
+    var peakBusL;  // Control bus for left peak
+    var peakBusR;  // Control bus for right peak
     
     *new { arg context, doneCallback;
         ^super.new(context, doneCallback);
@@ -21,6 +23,10 @@ Engine_Strata : CroneEngine {
         // Allocate audio buses for signal routing
         voiceBus = Bus.audio(context.server, 2);    // voices → filter
         filterBus = Bus.audio(context.server, 2);   // filter → reverb
+
+        // Allocate control buses for recording level monitoring
+        peakBusL = Bus.control(context.server, 1);
+        peakBusR = Bus.control(context.server, 1);
 
         // Allocate buffer for sample (30 seconds stereo at 48kHz)
         buffer = Buffer.alloc(context.server, 48000 * 30, 2);
@@ -244,19 +250,22 @@ Engine_Strata : CroneEngine {
             Out.kr(bus, lfo);
         }).add;
         
-        // Input monitoring SynthDef for recording VU meters
+        // Input monitoring SynthDef for recording level tracking
         SynthDef(\inputMonitor, {
-            var input, peak_l, peak_r, trig;
+            arg peakBusL=0, peakBusR=1;
+            var input, peakL, peakR;
 
             // Read stereo input
             input = SoundIn.ar([0, 1]);
 
-            // Measure peak levels with faster response
-            peak_l = Amplitude.kr(input[0], 0.005, 0.05);
-            peak_r = Amplitude.kr(input[1], 0.005, 0.05);
+            // Track peak levels with fast attack, slow decay
+            // Peak.kr will hold the peak value until reset
+            peakL = Peak.kr(Amplitude.kr(input[0], 0.01, 0.1), Impulse.kr(0));
+            peakR = Peak.kr(Amplitude.kr(input[1], 0.01, 0.1), Impulse.kr(0));
 
-            // Send via SendPeakRMS (norns-compatible metering)
-            SendPeakRMS.kr(input, 30, 3, '/input_levels');
+            // Write peaks to control buses
+            Out.kr(peakBusL, peakL);
+            Out.kr(peakBusR, peakR);
         }).add;
     }
     
@@ -501,10 +510,17 @@ Engine_Strata : CroneEngine {
                 monitorSynth.free;
             });
 
-            // Start monitoring synth (SendPeakRMS handles OSC automatically)
-            monitorSynth = Synth(\inputMonitor, [], masterGroup);
+            // Reset peak buses to zero
+            peakBusL.set(0);
+            peakBusR.set(0);
 
-            postln("Input monitoring started (SendPeakRMS)");
+            // Start monitoring synth with peak tracking
+            monitorSynth = Synth(\inputMonitor, [
+                \peakBusL, peakBusL.index,
+                \peakBusR, peakBusR.index
+            ], masterGroup);
+
+            postln("Input monitoring started (peak tracking)");
         });
 
         this.addCommand(\stopInputMonitor, "", { arg msg;
@@ -514,6 +530,19 @@ Engine_Strata : CroneEngine {
                 monitorSynth = nil;
             });
             postln("Input monitoring stopped");
+        });
+
+        // Get accumulated recording levels
+        this.addCommand(\getRecordingLevels, "", { arg msg;
+            // Read peak values from control buses
+            peakBusL.get({ arg peakL;
+                peakBusR.get({ arg peakR;
+                    postln("Recording peaks: L=" ++ peakL ++ " R=" ++ peakR);
+
+                    // Send levels to Lua via OSC
+                    NetAddr("localhost", 10111).sendMsg("/recording_levels", peakL, peakR);
+                });
+            });
         });
     }
     
@@ -570,5 +599,7 @@ Engine_Strata : CroneEngine {
         buffer.free;
         voiceBus.free;
         filterBus.free;
+        peakBusL.free;
+        peakBusR.free;
     }
 }
