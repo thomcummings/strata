@@ -3152,6 +3152,29 @@ function redraw()
         draw_scenes_page()
     end
 
+    -- Show notification as centered card (drawn on all pages)
+    if notification.active then
+        local card_width = 100
+        local card_height = 20
+        local card_x = 64 - (card_width / 2)
+        local card_y = 32 - (card_height / 2)
+
+        -- Draw filled background (opaque)
+        screen.level(0)
+        screen.rect(card_x, card_y, card_width, card_height)
+        screen.fill()
+
+        -- Draw border
+        screen.level(15)
+        screen.rect(card_x, card_y, card_width, card_height)
+        screen.stroke()
+
+        -- Draw centered text
+        screen.level(15)
+        screen.move(64, 32 + 3)  -- +3 for vertical centering
+        screen.text_center(notification.message)
+    end
+
     screen.update()
 end
 
@@ -3253,31 +3276,7 @@ function draw_play_page()
     else
         screen.text_right(state.snapshot_player.playing and "K2:● K3:⏸" or "K2:● K3:▶")
     end
-    
-    -- Show notification as centered card
-    if notification.active then
-        local card_width = 100
-        local card_height = 20
-        local card_x = 64 - (card_width / 2)
-        local card_y = 32 - (card_height / 2)
-        
-        -- Draw filled background (opaque)
-        screen.level(0)
-        screen.rect(card_x, card_y, card_width, card_height)
-        screen.fill()
-        
-        -- Draw border
-        screen.level(15)
-        screen.rect(card_x, card_y, card_width, card_height)
-        screen.stroke()
-        
-        -- Draw centered text
-        screen.level(15)
-        screen.move(64, 32 + 3)  -- +3 for vertical centering
-        screen.text_center(notification.message)
-    end
 
-    
 end
 
 function draw_sample_page()
