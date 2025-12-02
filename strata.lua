@@ -1704,6 +1704,18 @@ function init()
         engine.setReverbModDepth(state.reverb_mod_depth)
         engine.setReverbModFreq(state.reverb_mod_freq)
 
+        -- Set tape FX parameters
+        engine.setTapeMix(state.tape_mix)
+        engine.setTapeSaturation(state.tape_saturation)
+        engine.setTapeWow(state.tape_wow)
+        engine.setTapeFlutter(state.tape_flutter)
+        engine.setTapeAging(state.tape_aging)
+        engine.setTapeNoise(state.tape_noise)
+        engine.setTapeBias(state.tape_bias)
+        engine.setTapeCompression(state.tape_compression)
+        engine.setTapeDropout(state.tape_dropout)
+        engine.setTapeWidth(state.tape_width)
+
         -- Set master amp (ensure output is enabled on startup)
         engine.setMasterAmp(1)
 
