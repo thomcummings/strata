@@ -201,35 +201,35 @@ Engine_Strata : CroneEngine {
             Out.ar(out, filtered);
         }).add;
 
-        // Greyhole Reverb SynthDef (mi-engines)
+        // FreeVerb2 Reverb SynthDef (built-in, no dependencies)
         SynthDef(\greyhole, {
             arg in=0, out=0,
                 delayTime=0.1, damping=0.5, size=1.0, diff=0.707,
                 feedback=0.9, modDepth=0.1, modFreq=2.0, mix=0.0;
 
             var sig, verb, wet, dry;
+            var roomSize, decayTime;
 
             // Read input
             sig = In.ar(in, 2);
             dry = sig;
 
-            // Greyhole reverb (mi-engines - high quality)
-            // Greyhole expects: delayTime, damping, size, diff, feedback, modDepth, modFreq
-            verb = Greyhole.ar(
-                sig,
-                delayTime.clip(0.001, 2.0),   // delay time (0.001-2.0)
-                damping.clip(0, 1),            // damping (0-1)
-                size.clip(0.5, 5.0),           // size (0.5-5.0)
-                diff.clip(0, 1),               // diffusion (0-1)
-                feedback.clip(0, 1),           // feedback (0-1)
-                modDepth.clip(0, 1),           // modulation depth (0-1)
-                modFreq.clip(0.1, 10)          // modulation freq (0.1-10)
+            // Map parameters to FreeVerb2 ranges
+            // size (0.5-5.0) -> room (0-1): normalize and scale
+            roomSize = size.linlin(0.5, 5.0, 0.3, 1.0).clip(0, 1);
+
+            // feedback affects decay time
+            decayTime = (roomSize * feedback).clip(0, 1);
+
+            // FreeVerb2 stereo reverb (built-in to SuperCollider)
+            verb = FreeVerb2.ar(
+                sig[0], sig[1],
+                mix.clip(0, 1),        // mix: 0=dry, 1=wet
+                decayTime,              // room: affects decay time (0-1)
+                damping.clip(0, 1)     // damp: high freq damping (0-1)
             );
 
-            // Mix wet/dry using crossfade
-            sig = XFade2.ar(dry, verb, mix.clip(0, 1) * 2 - 1);
-
-            Out.ar(out, sig);
+            Out.ar(out, verb);
         }).add;
         
         // LFO SynthDef
