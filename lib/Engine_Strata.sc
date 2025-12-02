@@ -268,9 +268,10 @@ Engine_Strata : CroneEngine {
             // Read input
             sig = In.ar(in, 2);
             dry = sig;
+            wet = sig;
 
-            // Saturation (tape warmth/drive)
-            wet = (sig * (1 + (saturation * 2))).tanh;
+            // Saturation (tape warmth/drive) - only apply when saturation > 0
+            wet = wet + (((wet * (1 + (saturation * 2))).tanh - wet) * saturation);
 
             // Wow (slow pitch variation ~0.5Hz)
             wowLFO = LFNoise1.kr(0.5) * wow * 0.02;  // ±2% pitch variation
