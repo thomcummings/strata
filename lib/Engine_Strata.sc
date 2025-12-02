@@ -68,6 +68,7 @@ Engine_Strata : CroneEngine {
         ], filterGroup);
 
         // Create tape FX synth (filter → tape)
+        // Use \addToTail to ensure proper execution order in masterGroup
         tapeSynth = Synth(\tapeFX, [
             \in, filterBus,
             \out, tapeBus,
@@ -81,9 +82,10 @@ Engine_Strata : CroneEngine {
             \compression, 0.0,
             \dropout, 0.0,
             \width, 1.0
-        ], masterGroup);
+        ], masterGroup, \addToTail);
 
         // Create reverb synth (tape → reverb → output)
+        // Use \addToTail to ensure it runs after tapeSynth
         reverbSynth = Synth(\greyhole, [
             \in, tapeBus,
             \out, context.out_b,
@@ -95,7 +97,7 @@ Engine_Strata : CroneEngine {
             \modDepth, 0.2,        // Moderate modulation depth
             \modFreq, 0.5,         // Slow modulation for smooth sound
             \mix, 0.0              // Start completely dry
-        ], masterGroup);
+        ], masterGroup, \addToTail);
 
         // Create 3 LFO synths
         3.do({ arg i;
