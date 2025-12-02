@@ -256,7 +256,7 @@ Engine_Strata : CroneEngine {
             Out.ar(out, sig);
         }).add;
 
-        // Tape FX SynthDef (without pitch shifting for stability)
+        // Tape FX SynthDef
         SynthDef(\tapeFX, {
             arg in=0, out=0,
                 mix=0.0, saturation=0.0, wow=0.0, flutter=0.0,
@@ -264,52 +264,71 @@ Engine_Strata : CroneEngine {
                 dropout=0.0, width=1.0;
 
             var sig, wet, dry;
-            var compressed, aged, noiseSignal, dropoutGate;
+            var compressed, aged, noiseSignal, dropoutMask;
             var mid, side;
+            var wowMod, flutterMod, delayTime;
 
             // Read input
             sig = In.ar(in, 2);
             dry = sig;
             wet = sig;
 
-            // Saturation (tape warmth/drive) - only apply when saturation > 0
-            wet = wet + (((wet * (1 + (saturation * 2))).tanh - wet) * saturation);
+            // Saturation (tape warmth/drive) - more intense
+            wet = wet + (((wet * (1 + (saturation * 4))).tanh - wet) * saturation);
 
-            // NOTE: Wow and flutter (pitch variation) are not implemented yet
-            // PitchShift.ar causes instability on norns - will explore alternatives
+            // Wow and Flutter (pitch variation via modulated delay)
+            // Only apply when wow or flutter > 0 to avoid latency
+            // Wow: slow pitch variation ~0.5Hz
+            wowMod = LFNoise1.kr(0.5) * wow * 0.003;  // ±3ms variation
+            // Flutter: fast pitch variation ~6Hz
+            flutterMod = LFNoise1.kr(6) * flutter * 0.001;  // ±1ms variation
+            // Combined modulation - base delay 50ms + modulation
+            delayTime = 0.05 + wowMod + flutterMod;
+            wet = Select.ar(
+                ((wow + flutter) > 0).asInteger,
+                [
+                    wet,  // Bypass (no delay/pitch shift)
+                    DelayC.ar(wet, 0.2, delayTime.clip(0.001, 0.1))
+                ]
+            );
 
-            // Compression (tape compression character)
+            // Compression (tape compression character) - lower threshold
             compressed = Compander.ar(
                 wet,
                 wet,
-                0.5,                           // Threshold
+                0.2,                           // Lower threshold for more compression
                 1.0,                           // Below ratio (no compression)
-                1.0 / (1.0 + (compression * 3)), // Above ratio (more compression = lower ratio)
+                1.0 / (1.0 + (compression * 4)), // Stronger compression ratio
                 0.01,                          // Attack time
                 0.1                            // Release time
             );
             wet = wet + ((compressed - wet) * compression);
 
-            // Aging (high-frequency loss)
-            aged = LPF.ar(wet, 20000 - (aging * 15000));  // 20kHz down to 5kHz
+            // Aging (high-frequency loss) - more pronounced
+            aged = LPF.ar(wet, 20000 - (aging * 16000));  // 20kHz down to 4kHz
             wet = wet + ((aged - wet) * aging);
 
-            // Bias (frequency response character)
+            // Bias (frequency response character) - more pronounced
             // Bias > 0.5 = brighter, < 0.5 = darker
             wet = BPeakEQ.ar(
                 wet,
                 3000,                          // Center frequency
                 1.0,                           // Reciprocal of Q
-                (bias - 0.5) * 6               // ±3dB boost/cut
+                (bias - 0.5) * 12              // ±6dB boost/cut (was ±3dB)
             );
 
             // Noise (tape hiss)
-            noiseSignal = PinkNoise.ar(noise * 0.05);  // Keep noise subtle
+            noiseSignal = PinkNoise.ar(noise * 0.05);
             wet = wet + [noiseSignal, noiseSignal];
 
-            // Dropout (random signal dropouts)
-            dropoutGate = LFNoise0.kr(dropout * 10).range(0, 1) > (dropout * 0.7);
-            wet = wet * dropoutGate;
+            // Dropout (brief random dropouts, not long silences)
+            // Create brief dropouts using random impulses
+            dropoutMask = Dust.kr(dropout * 20);  // Random impulses
+            dropoutMask = 1 - EnvGen.kr(
+                Env.perc(0.001, 0.02),  // Very brief 20ms dropout
+                dropoutMask
+            );
+            wet = wet * dropoutMask;
 
             // Stereo width control (mid/side processing)
             mid = (wet[0] + wet[1]) * 0.5;
