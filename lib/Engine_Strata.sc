@@ -618,6 +618,8 @@ Engine_Strata : CroneEngine {
         this.addCommand(\setTapeWidth, "f", { arg msg;
             var width = msg[1].asFloat.clip(0.0, 2.0);
             tapeSynth.set(\width, width);
+        });
+
         this.addCommand(\setMasterAmp, "f", { arg msg;
             var amp = msg[1].asFloat.clip(0.0, 1.0);
             reverbSynth.set(\amp, amp);
