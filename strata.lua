@@ -1097,7 +1097,12 @@ function load_scene(slot)
     state.current_scale = scene.current_scale
     state.root_note = scene.root_note
     state.octave_offset = scene.octave_offset
-    state.octave_mode = scene.octave_mode
+    -- Backward compatibility: convert old "random" mode to "random_wide"
+    if scene.octave_mode == "random" then
+        state.octave_mode = "random_wide"
+    else
+        state.octave_mode = scene.octave_mode
+    end
     
     -- Load filter
     state.master_filter_cutoff = scene.master_filter_cutoff
@@ -1489,12 +1494,24 @@ end
 -- Trigger a note on a fader
 function trigger_note(fader_idx)
     local fader = state.faders[fader_idx]
-    
+
     local octave_shift = state.octave_offset
-    if state.octave_mode == "random" then
-        octave_shift = octave_shift + math.random(-1, 1)
+
+    -- Apply random octave shift based on mode
+    if state.octave_mode == "random_wide" then
+        -- R±2: -2 to +2
+        octave_shift = math.random(-2, 2)
+    elseif state.octave_mode == "random_mid" then
+        -- R±1: -1 to +1
+        octave_shift = math.random(-1, 1)
+    elseif state.octave_mode == "random_up" then
+        -- R+1: 0 to +1
+        octave_shift = math.random(0, 1)
+    elseif state.octave_mode == "random_down" then
+        -- R-1: -1 to 0
+        octave_shift = math.random(-1, 0)
     end
-    
+
     local freq = ScaleSystem.get_frequency(
         fader_idx,
         state.current_scale,
@@ -1877,24 +1894,41 @@ function enc(n, delta)
                 )
             end
         else
-            -- E2: Octave offset (existing code)
+            -- E2: Octave offset with multiple random modes
             if delta > 0 then
+                -- Scrolling forward (up) - reverse through random modes
                 if state.octave_mode == "normal" then
                     state.octave_offset = util.clamp(state.octave_offset + 1, -2, 2)
-                else
-                    if state.octave_offset >= 2 then
-                        state.octave_mode = "normal"
-                        state.octave_offset = -2
-                    else
-                        state.octave_offset = util.clamp(state.octave_offset + 1, -2, 2)
-                    end
+                elseif state.octave_mode == "random_wide" then
+                    -- Exit random modes, return to normal at +2
+                    state.octave_mode = "normal"
+                    state.octave_offset = 2
+                elseif state.octave_mode == "random_mid" then
+                    state.octave_mode = "random_wide"
+                elseif state.octave_mode == "random_up" then
+                    state.octave_mode = "random_mid"
+                elseif state.octave_mode == "random_down" then
+                    state.octave_mode = "random_up"
                 end
             else
-                if state.octave_offset <= -2 then
-                    state.octave_mode = "random"
-                    state.octave_offset = 0
-                else
-                    state.octave_offset = util.clamp(state.octave_offset - 1, -2, 2)
+                -- Scrolling backward (down) - advance through random modes
+                if state.octave_mode == "normal" then
+                    if state.octave_offset <= -2 then
+                        -- Enter first random mode
+                        state.octave_mode = "random_wide"
+                    else
+                        state.octave_offset = util.clamp(state.octave_offset - 1, -2, 2)
+                    end
+                elseif state.octave_mode == "random_wide" then
+                    state.octave_mode = "random_mid"
+                elseif state.octave_mode == "random_mid" then
+                    state.octave_mode = "random_up"
+                elseif state.octave_mode == "random_up" then
+                    state.octave_mode = "random_down"
+                elseif state.octave_mode == "random_down" then
+                    -- Wrap back to normal at +2
+                    state.octave_mode = "normal"
+                    state.octave_offset = 2
                 end
             end
             update_all_notes()
@@ -2480,7 +2514,22 @@ function draw_play_page()
     
     screen.level(8)
     screen.move(4, 15)
-    local oct_display = state.octave_mode == "random" and "R" or state.octave_offset
+    -- Display octave with mathematical notation for random modes
+    local oct_display
+    if state.octave_mode == "normal" then
+        oct_display = state.octave_offset
+    elseif state.octave_mode == "random_wide" then
+        oct_display = "R±2"
+    elseif state.octave_mode == "random_mid" then
+        oct_display = "R±1"
+    elseif state.octave_mode == "random_up" then
+        oct_display = "R+1"
+    elseif state.octave_mode == "random_down" then
+        oct_display = "R-1"
+    else
+        oct_display = state.octave_offset  -- Fallback
+    end
+
     if state.k1_held then
         -- Show filter type when K1 held
         local filter_types = {"LP", "HP", "BP"}
