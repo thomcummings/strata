@@ -1647,16 +1647,19 @@ end
 
 function load_scenes_from_disk()
     local path = _path.data .. "strata/scenes.data"
-    
+
+    -- Initialize all 8 slots with empty scenes first
+    for i = 1, 8 do
+        state.scenes[i] = { empty = true }
+    end
+
     if util.file_exists(path) then
         local data = tab.load(path)
         if data then
-            -- Ensure all 8 slots exist
+            -- Load saved scenes, overwriting empty defaults
             for i = 1, 8 do
                 if data[i] then
                     state.scenes[i] = data[i]
-                else
-                    state.scenes[i] = { empty = true }
                 end
             end
             print("Scenes loaded")
