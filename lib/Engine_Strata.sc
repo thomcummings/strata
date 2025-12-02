@@ -280,13 +280,14 @@ Engine_Strata : CroneEngine {
             flutterLFO = LFNoise1.kr(6) * flutter * 0.01;  // ±1% pitch variation
 
             // Combined pitch modulation via PitchShift
+            // Only apply when wow or flutter > 0 to avoid latency/artifacts
             pitchMod = wowLFO + flutterLFO;
-            wet = PitchShift.ar(
-                wet,
-                0.2,                           // Window size
-                1.0 + pitchMod,                // Pitch ratio
-                0.0,                           // Pitch dispersion
-                0.1                            // Time dispersion
+            wet = SelectX.ar(
+                (wow + flutter).clip(0, 1),  // Crossfade: 0 = bypass, >0 = process
+                [
+                    wet,  // Bypass (no pitch shift)
+                    PitchShift.ar(wet, 0.2, 1.0 + pitchMod, 0.0, 0.1)  // Pitch shifted
+                ]
             );
 
             // Compression (tape compression character)
