@@ -238,7 +238,9 @@ local state = {
     -- Scene system (8 slots)
     scenes = {},
     scene_selected = 1,
-    
+    scene_overwrite_confirm_slot = nil,  -- Track which scene needs overwrite confirmation
+    scene_overwrite_confirm_time = 0,    -- Time when confirmation was requested
+
     morphing = {
         active = false,
         from_positions = {},
@@ -1302,7 +1304,7 @@ function load_tape_preset(preset_index)
 end
 
 -- Scene management functions
-function save_scene(slot)
+function save_scene(slot, custom_notification)
     -- Capture complete state
     state.scenes[slot] = {
         empty = false,
@@ -1407,8 +1409,13 @@ function save_scene(slot)
     for i, v in ipairs(state.snapshot_player.pattern) do
         table.insert(state.scenes[slot].snapshot_player_pattern, v)
     end
-    
-    show_notification("SCENE " .. slot .. " SAVED", 2.0)
+
+    -- Show custom notification or default
+    if custom_notification then
+        show_notification(custom_notification, 2.0)
+    else
+        show_notification("SCENE " .. slot .. " SAVED", 2.0)
+    end
     save_scenes_to_disk()
 end
 
@@ -2316,6 +2323,11 @@ function enc(n, delta)
         -- Also ensure lfo_selected is valid
         state.lfo_selected = util.clamp(state.lfo_selected, 1, state.lfo_count)
     end
+
+    -- Reset scene overwrite confirmation when leaving SCENES page
+    if old_page == 11 and state.current_page ~= 11 then
+        state.scene_overwrite_confirm_slot = nil
+    end
     
     elseif state.current_page == 1 then
     -- PLAY page
@@ -2879,6 +2891,8 @@ function enc(n, delta)
         -- SCENES page
         if n == 2 then
             state.scene_selected = util.wrap(state.scene_selected + delta, 1, 8)
+            -- Reset overwrite confirmation when changing selection
+            state.scene_overwrite_confirm_slot = nil
         end
     end
 end
@@ -2987,8 +3001,25 @@ function key(n, z)
                     end
                 end
             elseif state.current_page == 11 then
-                -- SCENES page: Save scene
-                save_scene(state.scene_selected)
+                -- SCENES page: Save scene (with overwrite confirmation)
+                local slot = state.scene_selected
+                local scene_is_empty = state.scenes[slot].empty
+
+                -- Check if we're in confirmation mode for this slot
+                if state.scene_overwrite_confirm_slot == slot and
+                   (util.time() - state.scene_overwrite_confirm_time) < 3.0 then
+                    -- Confirmed - save the scene with overwrite message
+                    save_scene(slot, "SCENE " .. slot .. " OVERWRITTEN")
+                    state.scene_overwrite_confirm_slot = nil
+                elseif not scene_is_empty then
+                    -- Scene exists - request confirmation
+                    state.scene_overwrite_confirm_slot = slot
+                    state.scene_overwrite_confirm_time = util.time()
+                    show_notification("K2 AGAIN TO OVERWRITE", 2.0)
+                else
+                    -- Scene is empty - save directly
+                    save_scene(slot)
+                end
             end
             
         elseif n == 3 then
