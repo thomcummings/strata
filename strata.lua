@@ -1364,11 +1364,38 @@ function save_scene(slot, custom_notification)
         tape_dropout = state.tape_dropout,
         tape_width = state.tape_width,
 
-        -- LFO (placeholder for future)
+        -- LFO states
         lfos = {
-            {rate = state.lfos[1].rate, depth = state.lfos[1].depth, shape = state.lfos[1].shape},
-            {rate = state.lfos[2].rate, depth = state.lfos[2].depth, shape = state.lfos[2].shape},
-            {rate = state.lfos[3].rate, depth = state.lfos[3].depth, shape = state.lfos[3].shape}
+            {
+                enabled = state.lfos[1].enabled,
+                shape = state.lfos[1].shape,
+                rate_mode = state.lfos[1].rate_mode,
+                rate_hz = state.lfos[1].rate_hz,
+                rate_bpm_div = state.lfos[1].rate_bpm_div,
+                depth = state.lfos[1].depth,
+                destination = state.lfos[1].destination,
+                dest_param = state.lfos[1].dest_param
+            },
+            {
+                enabled = state.lfos[2].enabled,
+                shape = state.lfos[2].shape,
+                rate_mode = state.lfos[2].rate_mode,
+                rate_hz = state.lfos[2].rate_hz,
+                rate_bpm_div = state.lfos[2].rate_bpm_div,
+                depth = state.lfos[2].depth,
+                destination = state.lfos[2].destination,
+                dest_param = state.lfos[2].dest_param
+            },
+            {
+                enabled = state.lfos[3].enabled,
+                shape = state.lfos[3].shape,
+                rate_mode = state.lfos[3].rate_mode,
+                rate_hz = state.lfos[3].rate_hz,
+                rate_bpm_div = state.lfos[3].rate_bpm_div,
+                depth = state.lfos[3].depth,
+                destination = state.lfos[3].destination,
+                dest_param = state.lfos[3].dest_param
+            }
         },
         
         -- Sequencer
@@ -1513,16 +1540,17 @@ function load_scene(slot)
     state.tape_dropout = scene.tape_dropout or 0.0
     state.tape_width = scene.tape_width or 1.0
 
-    -- Load LFO (placeholder)
-    state.lfos[1].rate = scene.lfos[1].rate
-    state.lfos[1].depth = scene.lfos[1].depth
-    state.lfos[1].shape = scene.lfos[1].shape
-    state.lfos[2].rate = scene.lfos[2].rate
-    state.lfos[2].depth = scene.lfos[2].depth
-    state.lfos[2].shape = scene.lfos[2].shape
-    state.lfos[3].rate = scene.lfos[3].rate
-    state.lfos[3].depth = scene.lfos[3].depth
-    state.lfos[3].shape = scene.lfos[3].shape
+    -- Load LFO states (with defaults for backward compatibility)
+    for i = 1, 3 do
+        state.lfos[i].enabled = scene.lfos[i].enabled or false
+        state.lfos[i].shape = scene.lfos[i].shape or 1
+        state.lfos[i].rate_mode = scene.lfos[i].rate_mode or 1
+        state.lfos[i].rate_hz = scene.lfos[i].rate_hz or (i == 1 and 1.0 or i == 2 and 2.0 or 0.5)
+        state.lfos[i].rate_bpm_div = scene.lfos[i].rate_bpm_div or 4
+        state.lfos[i].depth = scene.lfos[i].depth or 50
+        state.lfos[i].destination = scene.lfos[i].destination or i
+        state.lfos[i].dest_param = scene.lfos[i].dest_param or 1
+    end
     
     -- Load sequencer
     state.snapshot_player.mode = scene.snapshot_player_mode
