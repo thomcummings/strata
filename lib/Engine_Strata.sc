@@ -14,6 +14,8 @@ Engine_Strata : CroneEngine {
     var voiceBus;
     var filterBus;
     var tapeBus;
+    var peakBusL;  // Control bus for left peak
+    var peakBusR;  // Control bus for right peak
     
     *new { arg context, doneCallback;
         ^super.new(context, doneCallback);
@@ -24,6 +26,10 @@ Engine_Strata : CroneEngine {
         voiceBus = Bus.audio(context.server, 2);    // voices → filter
         filterBus = Bus.audio(context.server, 2);   // filter → tape
         tapeBus = Bus.audio(context.server, 2);     // tape → reverb
+
+        // Allocate control buses for recording level monitoring
+        peakBusL = Bus.control(context.server, 1);
+        peakBusR = Bus.control(context.server, 1);
 
         // Allocate buffer for sample (30 seconds stereo at 48kHz)
         buffer = Buffer.alloc(context.server, 48000 * 30, 2);
@@ -218,7 +224,7 @@ Engine_Strata : CroneEngine {
         SynthDef(\greyhole, {
             arg in=0, out=0,
                 delayTime=0.1, damping=0.5, size=1.0, diff=0.707,
-                feedback=0.9, modDepth=0.1, modFreq=2.0, mix=0.0;
+                feedback=0.9, modDepth=0.1, modFreq=2.0, mix=0.0, amp=1.0;
 
             var sig, verb, wet, dry;
 
@@ -241,6 +247,9 @@ Engine_Strata : CroneEngine {
 
             // Mix wet/dry using crossfade
             sig = XFade2.ar(dry, verb, mix.clip(0, 1) * 2 - 1);
+
+            // Apply master amp (for muting during recording)
+            sig = sig * amp.clip(0, 1);
 
             Out.ar(out, sig);
         }).add;
@@ -341,19 +350,22 @@ Engine_Strata : CroneEngine {
             Out.kr(bus, lfo);
         }).add;
         
-        // Input monitoring SynthDef for recording VU meters
+        // Input monitoring SynthDef for recording level tracking
         SynthDef(\inputMonitor, {
-            var input, peak_l, peak_r, trig;
+            arg peakBusL=0, peakBusR=1;
+            var input, peakL, peakR;
 
             // Read stereo input
             input = SoundIn.ar([0, 1]);
 
-            // Measure peak levels with faster response
-            peak_l = Amplitude.kr(input[0], 0.005, 0.05);
-            peak_r = Amplitude.kr(input[1], 0.005, 0.05);
+            // Track peak levels with fast attack, slow decay
+            // Peak.kr will hold the peak value until reset
+            peakL = Peak.kr(Amplitude.kr(input[0], 0.01, 0.1), Impulse.kr(0));
+            peakR = Peak.kr(Amplitude.kr(input[1], 0.01, 0.1), Impulse.kr(0));
 
-            // Send via SendPeakRMS (norns-compatible metering)
-            SendPeakRMS.kr(input, 30, 3, '/input_levels');
+            // Write peaks to control buses
+            Out.kr(peakBusL, peakL);
+            Out.kr(peakBusR, peakR);
         }).add;
     }
     
@@ -383,23 +395,77 @@ Engine_Strata : CroneEngine {
             });
         });
         
-        // Sample loading
+        // Sample loading with mono-to-stereo conversion
         this.addCommand(\loadSample, "s", { arg msg;
             var path = msg[1].asString;
+            var soundFile, oldBuffer;
+
             postln("Engine loading sample: " ++ path);
-            buffer.allocRead(path, completionMessage: {
-                var duration = buffer.numFrames / context.server.sampleRate;
-                var channels = buffer.numChannels;
 
-                postln("Sample loaded: " ++ path);
-                postln("  Frames: " ++ buffer.numFrames ++ " | Channels: " ++ channels ++ " | Duration: " ++ duration ++ "s");
-                postln("  Mono->Stereo conversion: " ++ if(channels == 1, {"ACTIVE"}, {"not needed"}));
+            // Check file info first to detect mono vs stereo
+            soundFile = SoundFile.new;
+            if(soundFile.openRead(path), {
+                var numChannels = soundFile.numChannels;
+                var numFrames = soundFile.numFrames;
+                var duration;
 
-                // Send duration to Lua via OSC
-                context.server.addr.sendMsg("/sample_duration", duration);
-                
-                // Trigger waveform generation
-                this.generateWaveform(buffer);
+                soundFile.close;
+
+                postln("Sample info: " ++ numChannels ++ " channels, " ++ numFrames ++ " frames, " ++ (numFrames / context.server.sampleRate) ++ "s");
+
+                // Keep reference to old buffer (don't free yet - voices still using it)
+                oldBuffer = buffer;
+
+                // Handle mono files: read mono channel into both buffer channels
+                if(numChannels == 1, {
+                    postln("Loading mono file (will be converted to stereo during playback)...");
+
+                    // Use Buffer.readChannel class method to allocate and read in one operation
+                    // channels: [0, 0] means read source channel 0 into both dest channels 0 and 1
+                    buffer = Buffer.readChannel(context.server, path, 0, -1, [0, 0], { arg buf;
+                        duration = buf.numFrames / context.server.sampleRate;
+                        postln("Mono sample loaded: " ++ path);
+                        postln("Buffer frames=" ++ buf.numFrames ++ " channels=" ++ buf.numChannels ++ " Duration=" ++ duration ++ "s");
+
+                        // Update all voice synths with new buffer number
+                        8.do({ arg i;
+                            synths[i].set(\bufnum, buf.bufnum);
+                        });
+
+                        // Now safe to free old buffer (voices updated to new buffer)
+                        oldBuffer.free;
+
+                        // Send duration to Lua via OSC (use NetAddr for norns)
+                        NetAddr("localhost", 10111).sendMsg("/sample_duration", duration);
+
+                        // Trigger waveform generation
+                        this.generateWaveform(buf);
+                    });
+                }, {
+                    // Stereo file: read normally
+                    postln("Loading stereo file...");
+                    buffer = Buffer.read(context.server, path, action: { arg buf;
+                        duration = buf.numFrames / context.server.sampleRate;
+                        postln("Stereo sample loaded: " ++ path);
+                        postln("Buffer frames=" ++ buf.numFrames ++ " channels=" ++ buf.numChannels ++ " Duration=" ++ duration ++ "s");
+
+                        // Update all voice synths with new buffer number
+                        8.do({ arg i;
+                            synths[i].set(\bufnum, buf.bufnum);
+                        });
+
+                        // Now safe to free old buffer (voices updated to new buffer)
+                        oldBuffer.free;
+
+                        // Send duration to Lua via OSC (use NetAddr for norns)
+                        NetAddr("localhost", 10111).sendMsg("/sample_duration", duration);
+
+                        // Trigger waveform generation
+                        this.generateWaveform(buf);
+                    });
+                });
+            }, {
+                postln("ERROR: Could not open file: " ++ path);
             });
         });
         
@@ -552,6 +618,9 @@ Engine_Strata : CroneEngine {
         this.addCommand(\setTapeWidth, "f", { arg msg;
             var width = msg[1].asFloat.clip(0.0, 2.0);
             tapeSynth.set(\width, width);
+        this.addCommand(\setMasterAmp, "f", { arg msg;
+            var amp = msg[1].asFloat.clip(0.0, 1.0);
+            reverbSynth.set(\amp, amp);
         });
 
         // Voice parameters
@@ -619,10 +688,17 @@ Engine_Strata : CroneEngine {
                 monitorSynth.free;
             });
 
-            // Start monitoring synth (SendPeakRMS handles OSC automatically)
-            monitorSynth = Synth(\inputMonitor, [], masterGroup);
+            // Reset peak buses to zero
+            peakBusL.set(0);
+            peakBusR.set(0);
 
-            postln("Input monitoring started (SendPeakRMS)");
+            // Start monitoring synth with peak tracking
+            monitorSynth = Synth(\inputMonitor, [
+                \peakBusL, peakBusL.index,
+                \peakBusR, peakBusR.index
+            ], masterGroup);
+
+            postln("Input monitoring started (peak tracking)");
         });
 
         this.addCommand(\stopInputMonitor, "", { arg msg;
@@ -633,15 +709,32 @@ Engine_Strata : CroneEngine {
             });
             postln("Input monitoring stopped");
         });
+
+        // Get accumulated recording levels
+        this.addCommand(\getRecordingLevels, "", { arg msg;
+            // Read peak values from control buses
+            peakBusL.get({ arg peakL;
+                peakBusR.get({ arg peakR;
+                    postln("Recording peaks: L=" ++ peakL ++ " R=" ++ peakR);
+
+                    // Send levels to Lua via OSC
+                    NetAddr("localhost", 10111).sendMsg("/recording_levels", peakL, peakR);
+                });
+            });
+        });
     }
     
     // Generate waveform data for display (method defined OUTSIDE addCommands)
-    generateWaveform { arg buf;
+    // Pass optional numFrames to use actual file size instead of buffer size
+    generateWaveform { arg buf, numFrames;
         var numSamples = 128; // Display resolution
-        var step, peaks;
-        
-        if(buf.numFrames > 0, {
-            step = buf.numFrames / numSamples;
+        var step, peaks, framesToUse;
+
+        // Use provided numFrames or fall back to buffer size
+        framesToUse = numFrames ?? buf.numFrames;
+
+        if(framesToUse > 0, {
+            step = framesToUse / numSamples;
             
             // Read buffer and find peaks for each display segment
             buf.loadToFloatArray(action: { arg array;
@@ -686,5 +779,7 @@ Engine_Strata : CroneEngine {
         voiceBus.free;
         filterBus.free;
         tapeBus.free;
+        peakBusL.free;
+        peakBusR.free;
     }
 }

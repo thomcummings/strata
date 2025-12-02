@@ -1,6 +1,17 @@
--- strata.lua
--- Vestax Faderboard emulation for Norns
--- v1.2 - with Pattern & Euclidean Sequencer
+-- strata
+-- 8-voice performance sampler
+-- v1.0
+--
+-- inspired by vestax faderboard
+--
+-- K2: load sample
+-- K3: start sequencer
+-- E1: change page
+-- E2/E3: adjust parameters
+--
+-- load chord packs in snapshots
+-- sequence between snapshots
+-- modulate with filters & lfos
 
 engine.name = "Strata"
 
@@ -173,7 +184,7 @@ local state = {
     },
     
     -- LFO shape names
-    lfo_shape_names = {"Sine", "Triangle", "Square", "Random"},
+    lfo_shape_names = {"Sine", "Triangle", "Square", "Random", "Smooth Random"},
     
     -- LFO BPM divisions
     lfo_bpm_divisions = {
@@ -238,7 +249,34 @@ local state = {
         progress = 0,
         manual_override = {}
     },
-    
+
+    -- Play mode system
+    play_mode = {
+        mode = "chord",  -- "chord", "strum", "arp"
+
+        -- Strum parameters
+        strum_rate_ms = 50,  -- 10-500ms between steps
+        strum_pattern = "up",  -- "up", "down", "updown", "random"
+
+        -- Arp parameters
+        arp_rate_div = 3,  -- Index into lfo_bpm_divisions (1/4 note default)
+        arp_pattern = "up",  -- "up", "down", "updown", "random"
+        arp_gate_length = 0.5,  -- 0.25 (staccato), 0.5 (normal), 0.9 (legato)
+        arp_source = "snapshot",  -- "snapshot" or "live"
+        arp_enabled = false,  -- Toggle arp on/off
+
+        -- Playback state
+        playing = false,
+        current_step = 1,
+        active_faders = {},  -- List of fader indices with position > threshold
+        target_positions = {},  -- Target positions for each fader (for strum/arp from snapshots)
+        direction = 1,  -- For updown pattern (1 or -1)
+        clock_id = nil,
+
+        -- Selected parameter for UI
+        selected_param = 1
+    },
+
     -- UI state
     current_page = 1,
     selected_param = 1,
@@ -287,6 +325,7 @@ end
 -- Initialize LFO random values
 for i = 1, state.lfo_count do
     state.lfos[i].random_value = 0
+    state.lfos[i].next_random_value = (math.random() * 2) - 1
     state.lfos[i].last_phase = 0
 end
 
@@ -324,8 +363,20 @@ function calculate_lfo_value(lfo)
             lfo.random_value = (math.random() * 2) - 1
         end
         value = lfo.random_value or 0
+    elseif lfo.shape == 5 then
+        -- Smooth Random (interpolated random)
+        -- Smoothly glides from one random value to the next
+        if phase < lfo.last_phase then
+            -- Phase wrapped - move to next random value
+            lfo.random_value = lfo.next_random_value or 0
+            lfo.next_random_value = (math.random() * 2) - 1
+        end
+        -- Linear interpolation between current and next random value
+        local current = lfo.random_value or 0
+        local next = lfo.next_random_value or 0
+        value = current + (next - current) * phase
     end
-    
+
     lfo.last_phase = phase
     return value
 end
@@ -761,6 +812,201 @@ function get_next_snapshot_index()
     end
 end
 
+-- ===================================
+-- PLAY MODE SYSTEM
+-- ===================================
+
+-- Get list of active faders (position > threshold)
+function get_active_faders()
+    local active = {}
+    for i = 0, 7 do
+        if state.faders[i].position > state.gate_threshold then
+            table.insert(active, i)
+        end
+    end
+    return active
+end
+
+-- Get next fader index based on pattern
+function get_next_play_mode_fader()
+    local active = state.play_mode.active_faders
+
+    if #active == 0 then
+        return nil
+    end
+
+    local pattern = state.play_mode.mode == "strum" and state.play_mode.strum_pattern or state.play_mode.arp_pattern
+    local step = state.play_mode.current_step
+
+    if pattern == "up" then
+        local idx = active[step]
+        state.play_mode.current_step = (step % #active) + 1
+        return idx
+
+    elseif pattern == "down" then
+        local idx = active[#active - step + 1]
+        state.play_mode.current_step = (step % #active) + 1
+        return idx
+
+    elseif pattern == "updown" then
+        -- Bounce back and forth
+        local effective_length = (#active * 2) - 2
+        if effective_length <= 0 then
+            effective_length = 1
+        end
+
+        local pos = ((step - 1) % effective_length) + 1
+        local idx
+
+        if pos <= #active then
+            idx = active[pos]
+        else
+            idx = active[#active - (pos - #active)]
+        end
+
+        state.play_mode.current_step = step + 1
+        return idx
+
+    elseif pattern == "random" then
+        local idx = active[math.random(1, #active)]
+        state.play_mode.current_step = step + 1
+        return idx
+    end
+
+    return nil
+end
+
+-- Calculate step duration based on mode
+function get_play_mode_step_duration()
+    if state.play_mode.mode == "strum" then
+        return math.max(state.play_mode.strum_rate_ms / 1000.0, 0.01)
+    elseif state.play_mode.mode == "arp" then
+        local bpm = math.max(state.snapshot_player.bpm or 120, 1)  -- Prevent division by zero
+        local beats = state.lfo_bpm_divisions[state.play_mode.arp_rate_div].beats or 1.0
+        return math.max((beats / bpm) * 60.0, 0.01)  -- Minimum 10ms
+    end
+    return 0.1  -- Fallback
+end
+
+-- Trigger note for a specific fader
+function trigger_play_mode_note(fader_idx)
+    -- Use stored target position if available, otherwise use current position
+    local position = state.play_mode.target_positions[fader_idx] or state.faders[fader_idx].position
+    if position > state.gate_threshold then
+        -- Temporarily set fader position to target for amplitude control
+        local old_pos = state.faders[fader_idx].position
+        state.faders[fader_idx].position = position
+
+        -- Use existing trigger_note function which handles frequency calculation and engine calls
+        trigger_note(fader_idx)
+
+        -- Note: Don't restore old position - let it stay at target for play mode
+    end
+end
+
+-- Release note for a specific fader
+function release_play_mode_note(fader_idx)
+    release_note(fader_idx)
+end
+
+-- Main playback clock
+function play_mode_clock()
+    while state.play_mode.playing do
+        -- Update active faders list and positions (for live arp)
+        if state.play_mode.mode == "arp" and state.play_mode.arp_source == "live" then
+            state.play_mode.active_faders = get_active_faders()
+            -- Update target positions from current fader positions
+            for i = 0, 7 do
+                state.play_mode.target_positions[i] = state.faders[i].position
+            end
+        end
+
+        -- Get next fader to trigger
+        local fader_idx = get_next_play_mode_fader()
+
+        if fader_idx then
+            -- Trigger the note
+            trigger_play_mode_note(fader_idx)
+
+            -- Handle gate length (arp mode only)
+            if state.play_mode.mode == "arp" then
+                clock.run(function()
+                    local duration = get_play_mode_step_duration()
+                    clock.sleep(duration * state.play_mode.arp_gate_length)
+                    release_play_mode_note(fader_idx)
+                end)
+            end
+        end
+
+        -- Wait for next step
+        clock.sleep(get_play_mode_step_duration())
+
+        -- Stop if strum mode and completed one cycle
+        if state.play_mode.mode == "strum" then
+            local pattern = state.play_mode.strum_pattern
+            local max_steps = #state.play_mode.active_faders
+
+            if pattern == "updown" then
+                max_steps = (max_steps * 2) - 2
+                if max_steps <= 0 then
+                    max_steps = 1
+                end
+            end
+
+            if state.play_mode.current_step > max_steps then
+                stop_play_mode()
+            end
+        end
+    end
+end
+
+-- Start play mode (called when snapshot triggers or arp toggled)
+function start_play_mode(source_faders, target_positions)
+    -- Capture fader positions
+    state.play_mode.active_faders = source_faders or get_active_faders()
+
+    -- Store target positions (if provided, used for strum/arp from snapshots)
+    if target_positions then
+        state.play_mode.target_positions = target_positions
+    else
+        -- For live mode, use current fader positions
+        state.play_mode.target_positions = {}
+        for i = 0, 7 do
+            state.play_mode.target_positions[i] = state.faders[i].position
+        end
+    end
+
+    if #state.play_mode.active_faders == 0 then
+        return  -- Nothing to play
+    end
+
+    -- Stop existing playback
+    if state.play_mode.playing then
+        stop_play_mode()
+    end
+
+    -- Reset state
+    state.play_mode.current_step = 1
+    state.play_mode.direction = 1
+    state.play_mode.playing = true
+
+    -- Start clock
+    state.play_mode.clock_id = clock.run(play_mode_clock)
+end
+
+-- Stop play mode
+function stop_play_mode()
+    state.play_mode.playing = false
+    if state.play_mode.clock_id then
+        clock.cancel(state.play_mode.clock_id)
+        state.play_mode.clock_id = nil
+    end
+end
+
+-- ===================================
+-- MORPHING & SNAPSHOTS
+-- ===================================
+
 function start_morph(to_idx)
     if to_idx == "rest" then
         -- Morph all faders to zero
@@ -803,16 +1049,41 @@ function start_morph(to_idx)
     state.morphing.to_positions = state.snapshots[to_idx].positions
     state.morphing.start_time = util.time()
     state.morphing.progress = 0
-    state.morphing.active = true
-    
+
     -- Reset manual override flags
     for i = 0, 7 do
         state.morphing.manual_override[i] = false
     end
-    
+
     state.snapshot_current = to_idx
-    
+
     print("Morphing to snapshot " .. to_idx)
+
+    -- Check if we should use play mode or normal morphing
+    local use_play_mode = state.play_mode.mode == "strum" or
+                          (state.play_mode.mode == "arp" and state.play_mode.arp_source == "snapshot")
+
+    if use_play_mode then
+        -- In strum/arp mode: skip normal morphing, let play mode handle it
+        state.morphing.active = false
+
+        -- Get active faders and their target positions from the snapshot
+        local active_faders = {}
+        local target_positions = {}
+        for i = 0, 7 do
+            local pos = state.snapshots[to_idx].positions[i]
+            target_positions[i] = pos
+            if pos > state.gate_threshold then
+                table.insert(active_faders, i)
+            end
+        end
+        if #active_faders > 0 then
+            start_play_mode(active_faders, target_positions)
+        end
+    else
+        -- Normal chord mode: use standard morphing
+        state.morphing.active = true
+    end
 end
 
 function jump_to_snapshot(idx)
@@ -1106,7 +1377,16 @@ function save_scene(slot)
         snapshot_player_euclidean_pulses = state.snapshot_player.euclidean_pulses,
         snapshot_player_euclidean_steps = state.snapshot_player.euclidean_steps,
         snapshot_player_euclidean_rotation = state.snapshot_player.euclidean_rotation,
-        snapshot_player_euclidean_rest_behavior = state.snapshot_player.euclidean_rest_behavior
+        snapshot_player_euclidean_rest_behavior = state.snapshot_player.euclidean_rest_behavior,
+
+        -- Play mode
+        play_mode_mode = state.play_mode.mode,
+        play_mode_strum_rate_ms = state.play_mode.strum_rate_ms,
+        play_mode_strum_pattern = state.play_mode.strum_pattern,
+        play_mode_arp_rate_div = state.play_mode.arp_rate_div,
+        play_mode_arp_pattern = state.play_mode.arp_pattern,
+        play_mode_arp_gate_length = state.play_mode.arp_gate_length,
+        play_mode_arp_source = state.play_mode.arp_source
     }
     
     -- Deep copy snapshots
@@ -1244,7 +1524,22 @@ function load_scene(slot)
     state.snapshot_player.euclidean_steps = scene.snapshot_player_euclidean_steps
     state.snapshot_player.euclidean_rotation = scene.snapshot_player_euclidean_rotation
     state.snapshot_player.euclidean_rest_behavior = scene.snapshot_player_euclidean_rest_behavior
-    
+
+    -- Load play mode
+    state.play_mode.mode = scene.play_mode_mode or "chord"
+    state.play_mode.strum_rate_ms = scene.play_mode_strum_rate_ms or 50
+    state.play_mode.strum_pattern = scene.play_mode_strum_pattern or "up"
+    state.play_mode.arp_rate_div = scene.play_mode_arp_rate_div or 3
+    state.play_mode.arp_pattern = scene.play_mode_arp_pattern or "up"
+    state.play_mode.arp_gate_length = scene.play_mode_arp_gate_length or 0.5
+    state.play_mode.arp_source = scene.play_mode_arp_source or "snapshot"
+
+    -- Stop any active arp if loading scene
+    if state.play_mode.playing then
+        stop_play_mode()
+    end
+    state.play_mode.arp_enabled = false
+
     -- Reset sequencer state
     state.snapshot_player.pattern_position = 1
     state.snapshot_player.euclidean_pattern = {}
@@ -1361,8 +1656,31 @@ function init()
         elseif path == "/sample_duration" then
             state.sample_duration = args[1]
             print("Sample duration: " .. string.format("%.2f", state.sample_duration) .. "s")
+        elseif path == "/recording_levels" then
+            -- Receive accumulated peak levels from engine
+            local peakL = args[1]
+            local peakR = args[2]
+            print("Received levels: L=" .. string.format("%.3f", peakL) ..
+                  " R=" .. string.format("%.3f", peakR))
+
+            -- Determine mono/stereo with threshold
+            local threshold = 0.01
+            local hasLeft = peakL > threshold
+            local hasRight = peakR > threshold
+
+            -- Store for use in file writing
+            state.recording_is_mono = hasLeft ~= hasRight
+            state.recording_mono_voice = hasLeft and 1 or 2
+
+            print("Detection: " .. (state.recording_is_mono and "MONO" or "STEREO"))
+            if state.recording_is_mono then
+                print("Mono source: " .. (state.recording_mono_voice == 1 and "LEFT" or "RIGHT"))
+            end
+
+            -- Trigger the actual file write
+            clock.run(write_recording_file)
         end
-        -- Note: VU meters now use audio.level_monitor_input() directly in recording clock
+        -- Note: Recording levels monitored via SC control buses
     end
     
     -- Wait for engine to be ready
@@ -1385,6 +1703,9 @@ function init()
         engine.setReverbDiff(state.reverb_diff)
         engine.setReverbModDepth(state.reverb_mod_depth)
         engine.setReverbModFreq(state.reverb_mod_freq)
+
+        -- Set master amp (ensure output is enabled on startup)
+        engine.setMasterAmp(1)
 
         -- Set envelope for all voices
         for i = 0, state.num_faders - 1 do
@@ -1700,7 +2021,10 @@ function start_recording()
     if state.snapshot_player.playing then
         stop_snapshot_sequencer()
     end
-    
+
+    -- Mute engine output during recording (prevent loaded sample from playing)
+    engine.setMasterAmp(0)
+
     -- Save current state to restore if cancelled
     state.recording_saved_path = state.sample_path
     state.recording_saved_waveform = {}
@@ -1713,6 +2037,8 @@ function start_recording()
     state.recording_time = 0
     state.recording_level_l = 0
     state.recording_level_r = 0
+    state.recording_peak_l = 0  -- Track peak levels to detect mono
+    state.recording_peak_r = 0
     
     -- Create date-organized folder structure
     local date_folder = os.date("%Y%m%d")
@@ -1782,31 +2108,31 @@ function start_recording()
     -- Store start time
     state.recording_start_time = util.time()
 
-    -- Timer clock with VU meter polling
+    -- Start engine input monitoring (tracks peaks in SC)
+    engine.startInputMonitor()
+
+    -- Simple timer clock for recording timeout
     state.recording_clock = clock.run(function()
         while state.recording do
-            clock.sleep(1/30)  -- 30Hz update for smooth VU meters
+            clock.sleep(0.1)  -- Check every 100ms
 
             -- Update time from start
             state.recording_time = util.time() - state.recording_start_time
 
-            -- Get input levels from norns audio system
-            state.recording_level_l = audio.level_monitor_input(0)
-            state.recording_level_r = audio.level_monitor_input(1)
-
-            -- Debug: show VU levels
-            if state.recording_level_l > 0.01 or state.recording_level_r > 0.01 then
-                print("VU: L=" .. string.format("%.3f", state.recording_level_l) ..
-                      " R=" .. string.format("%.3f", state.recording_level_r))
+            -- Debug: show time every second
+            if math.floor(state.recording_time) ~= math.floor(state.recording_time - 0.1) then
+                print("Recording time: " .. string.format("%.1f", state.recording_time) .. "s")
             end
 
             if state.recording_time >= 30 then
+                print("Recording timeout reached at 30s")
                 stop_recording()
+                break
             end
         end
         state.recording_clock = nil
     end)
-    
+
     print("Recording started: " .. filename)
     show_notification("RECORDING", 1.0)
 end
@@ -1827,7 +2153,13 @@ function cancel_recording()
     softcut.enable(1, 0)
     softcut.enable(2, 0)
 
-    -- Stop recording clock (which also stops VU meter polling)
+    -- Stop engine monitoring
+    engine.stopInputMonitor()
+
+    -- Restore engine output (unmute)
+    engine.setMasterAmp(1)
+
+    -- Stop recording clock
     if state.recording_clock then
         clock.cancel(state.recording_clock)
         state.recording_clock = nil
@@ -1842,12 +2174,51 @@ function cancel_recording()
     show_notification("CANCELLED", 1.5)
 end
 
+-- Write recording file (called after level analysis)
+function write_recording_file()
+    local duration = state.recording_time
+    local path = state.recording_path
+
+    show_notification("SAVING...", 2.0)
+
+    -- Write file based on mono/stereo detection
+    if state.recording_is_mono then
+        local voice = state.recording_mono_voice
+        print("Writing mono file from voice " .. voice .. "...")
+        softcut.buffer_write_mono(path, 0, duration, voice)
+    else
+        print("Writing stereo file...")
+        softcut.buffer_write_stereo(path, 0, duration, 1, 2)
+    end
+
+    print("Saving to: " .. path)
+
+    -- Wait for file write, then clean up and load
+    clock.sleep(duration * 0.1 + 1)  -- Wait proportional to recording length
+
+    -- Stop playback and disable softcut
+    softcut.play(1, 0)
+    softcut.play(2, 0)
+    softcut.enable(1, 0)
+    softcut.enable(2, 0)
+
+    -- Verify and load
+    if util.file_exists(path) then
+        print("File verified, loading...")
+        load_sample(path)
+        show_notification("LOADED: " .. string.format("%.1fs", duration), 2.0)
+    else
+        show_notification("SAVE FAILED", 2.0)
+        print("ERROR: File not found: " .. path)
+    end
+end
+
 -- Stop recording
 function stop_recording()
     if not state.recording then
         return
     end
-    
+
     state.recording = false
     local duration = state.recording_time
     
@@ -1856,39 +2227,23 @@ function stop_recording()
         clock.cancel(state.recording_clock)
         state.recording_clock = nil
     end
-    
+
     -- Stop recording
     softcut.rec(1, 0)
     softcut.rec(2, 0)
 
+    -- Stop engine input monitoring
+    engine.stopInputMonitor()
+
+    -- Restore engine output (unmute)
+    engine.setMasterAmp(1)
+
     print("Recording stopped after " .. string.format("%.1f", duration) .. "s")
-    show_notification("SAVING...", 2.0)
-    
-    -- Write file
-    softcut.buffer_write_stereo(state.recording_path, 0, duration, 1, 2)
-    
-    print("Saving to: " .. state.recording_path)
-    
-    -- Wait for file write, then clean up and load
-    clock.run(function()
-        clock.sleep(duration * 0.1 + 1)  -- Wait proportional to recording length
-        
-        -- Stop playback and disable
-        softcut.play(1, 0)
-        softcut.play(2, 0)
-        softcut.enable(1, 0)
-        softcut.enable(2, 0)
-        
-        -- Verify and load
-        if util.file_exists(state.recording_path) then
-            print("File verified, loading...")
-            load_sample(state.recording_path)
-            show_notification("LOADED: " .. string.format("%.1fs", duration), 2.0)
-        else
-            show_notification("SAVE FAILED", 2.0)
-            print("ERROR: File not found: " .. state.recording_path)
-        end
-    end)
+    show_notification("ANALYZING...", 1.0)
+
+    -- Request accumulated levels from engine
+    -- Response will come via /recording_levels OSC message
+    engine.getRecordingLevels()
 end
 
 -- Handle filter cutoff CC
@@ -1924,10 +2279,10 @@ function enc(n, delta)
     if n == 1 then
     -- Page navigation
     local old_page = state.current_page
-    state.current_page = util.clamp(state.current_page + delta, 1, 10)
-    
+    state.current_page = util.clamp(state.current_page + delta, 1, 11)
+
     -- Reset parameter selection when entering LFO page
-    if state.current_page == 9 and old_page ~= 9 then
+    if state.current_page == 10 and old_page ~= 10 then
         state.lfo_selected_param = 1
         -- Also ensure lfo_selected is valid
         state.lfo_selected = util.clamp(state.lfo_selected, 1, state.lfo_count)
@@ -2015,8 +2370,10 @@ function enc(n, delta)
             engine.setLoopPoints(state.loop_start, calculate_loop_end())
             
         elseif state.selected_param == 2 then
-            -- Length (existing code)
-            local new_length = state.loop_length + (delta * 0.001)
+            -- Length with adaptive step size
+            -- Use smaller steps (<1s) for fine control, larger steps (>1s) for speed
+            local step_size = state.loop_length < 1.0 and 0.001 or 0.05
+            local new_length = state.loop_length + (delta * step_size)
             local max_length = (1.0 - state.loop_start) * state.sample_duration
             state.loop_length = util.clamp(new_length, 0.001, max_length)
             engine.setLoopPoints(state.loop_start, calculate_loop_end())
@@ -2067,8 +2424,111 @@ function enc(n, delta)
                 state.snapshot_selected = util.wrap(state.snapshot_selected + delta, 1, 8)
             end
         end
-        
+
     elseif state.current_page == 4 then
+        -- PLAY MODE page
+        if n == 2 then
+            local max_params = 1
+            if state.play_mode.mode == "strum" then
+                max_params = 3
+            elseif state.play_mode.mode == "arp" then
+                max_params = 6
+            end
+            state.play_mode.selected_param = util.wrap(state.play_mode.selected_param + delta, 1, max_params)
+        elseif n == 3 then
+            if state.play_mode.selected_param == 1 then
+                -- Mode selection
+                local modes = {"chord", "strum", "arp"}
+                local current_idx = 1
+                for i, m in ipairs(modes) do
+                    if m == state.play_mode.mode then
+                        current_idx = i
+                        break
+                    end
+                end
+                local next_idx = util.wrap(current_idx + delta, 1, 3)
+                local old_mode = state.play_mode.mode
+                state.play_mode.mode = modes[next_idx]
+
+                -- Stop arp if switching away from arp mode
+                if old_mode == "arp" and state.play_mode.playing then
+                    stop_play_mode()
+                    state.play_mode.arp_enabled = false
+                end
+
+                -- Reset selected param when mode changes
+                state.play_mode.selected_param = 1
+
+            elseif state.play_mode.mode == "strum" then
+                if state.play_mode.selected_param == 2 then
+                    -- Strum rate
+                    state.play_mode.strum_rate_ms = util.clamp(
+                        state.play_mode.strum_rate_ms + (delta * 10), 10, 500
+                    )
+                elseif state.play_mode.selected_param == 3 then
+                    -- Strum pattern
+                    local patterns = {"up", "down", "updown", "random"}
+                    local current_idx = 1
+                    for i, p in ipairs(patterns) do
+                        if p == state.play_mode.strum_pattern then
+                            current_idx = i
+                            break
+                        end
+                    end
+                    local next_idx = util.wrap(current_idx + delta, 1, 4)
+                    state.play_mode.strum_pattern = patterns[next_idx]
+                end
+
+            elseif state.play_mode.mode == "arp" then
+                if state.play_mode.selected_param == 2 then
+                    -- Arp rate (BPM division)
+                    state.play_mode.arp_rate_div = util.wrap(
+                        state.play_mode.arp_rate_div + delta, 1, #state.lfo_bpm_divisions
+                    )
+                elseif state.play_mode.selected_param == 3 then
+                    -- Arp pattern
+                    local patterns = {"up", "down", "updown", "random"}
+                    local current_idx = 1
+                    for i, p in ipairs(patterns) do
+                        if p == state.play_mode.arp_pattern then
+                            current_idx = i
+                            break
+                        end
+                    end
+                    local next_idx = util.wrap(current_idx + delta, 1, 4)
+                    state.play_mode.arp_pattern = patterns[next_idx]
+                elseif state.play_mode.selected_param == 4 then
+                    -- Gate length
+                    local gates = {0.25, 0.5, 0.9}
+                    local current_idx = 2  -- Default to 0.5
+                    for i, g in ipairs(gates) do
+                        if math.abs(g - state.play_mode.arp_gate_length) < 0.01 then
+                            current_idx = i
+                            break
+                        end
+                    end
+                    local next_idx = util.wrap(current_idx + delta, 1, 3)
+                    state.play_mode.arp_gate_length = gates[next_idx]
+                elseif state.play_mode.selected_param == 5 then
+                    -- Source
+                    if delta ~= 0 then
+                        state.play_mode.arp_source = (state.play_mode.arp_source == "snapshot") and "live" or "snapshot"
+                    end
+                elseif state.play_mode.selected_param == 6 then
+                    -- Active toggle
+                    if delta ~= 0 then
+                        state.play_mode.arp_enabled = not state.play_mode.arp_enabled
+                        if state.play_mode.arp_enabled then
+                            start_play_mode()
+                        else
+                            stop_play_mode()
+                        end
+                    end
+                end
+            end
+        end
+
+    elseif state.current_page == 5 then
         -- SEQUENCER page
         if n == 2 then
             -- Determine number of params based on mode
@@ -2174,7 +2634,7 @@ function enc(n, delta)
             end
         end
     
-    elseif state.current_page == 5 then
+    elseif state.current_page == 6 then
         -- ENVELOPE page
         if n == 2 then
             state.selected_param = util.wrap(state.selected_param + delta, 1, 5)
@@ -2200,7 +2660,7 @@ function enc(n, delta)
             end
         end
         
-    elseif state.current_page == 6 then
+    elseif state.current_page == 7 then
         -- SCALE page
         if n == 2 then
             state.selected_param = util.wrap(state.selected_param + delta, 1, 3)
@@ -2217,7 +2677,7 @@ function enc(n, delta)
             end
         end
 
-    elseif state.current_page == 7 then
+    elseif state.current_page == 8 then
         -- FX page (reverb + tape)
         if state.k1_held and n == 2 then
             -- K1+E2: Browse tape presets
@@ -2287,7 +2747,7 @@ function enc(n, delta)
             end
         end
 
-    elseif state.current_page == 8 then
+    elseif state.current_page == 9 then
         -- MIDI settings page
         if n == 2 then
             state.selected_param = util.wrap(state.selected_param + delta, 1, 2)
@@ -2301,7 +2761,7 @@ function enc(n, delta)
             end
         end
 
-    elseif state.current_page == 9 then
+    elseif state.current_page == 10 then
         -- LFO page
         if n == 2 then
             -- E2: Select parameter
@@ -2326,7 +2786,7 @@ function enc(n, delta)
                 end
             elseif state.lfo_selected_param == 3 then
                 -- Shape
-                lfo.shape = util.wrap(lfo.shape + delta, 1, 4)
+                lfo.shape = util.wrap(lfo.shape + delta, 1, 5)
             elseif state.lfo_selected_param == 4 then
                 -- Rate mode
                 if delta ~= 0 then
@@ -2369,7 +2829,7 @@ function enc(n, delta)
             end
         end
 
-    elseif state.current_page == 10 then
+    elseif state.current_page == 11 then
         -- SCENES page
         if n == 2 then
             state.scene_selected = util.wrap(state.scene_selected + delta, 1, 8)
@@ -2427,6 +2887,23 @@ function key(n, z)
                     jump_to_snapshot(state.snapshot_selected)
                 end
             elseif state.current_page == 4 then
+                -- PLAY MODE page: K2 action depends on mode
+                if state.play_mode.mode == "strum" then
+                    -- Manual strum trigger
+                    local active = get_active_faders()
+                    if #active > 0 then
+                        start_play_mode(active)
+                    end
+                elseif state.play_mode.mode == "arp" then
+                    -- Toggle arp on/off
+                    state.play_mode.arp_enabled = not state.play_mode.arp_enabled
+                    if state.play_mode.arp_enabled then
+                        start_play_mode()
+                    else
+                        stop_play_mode()
+                    end
+                end
+            elseif state.current_page == 5 then
                 -- SEQUENCER page
                 if state.snapshot_player.mode == "pattern" then
                     pattern_add_snapshot()
@@ -2439,12 +2916,12 @@ function key(n, z)
                     show_notification("REST: " .. string.upper(state.snapshot_player.euclidean_rest_behavior), 1.5)
                     save_snapshots_to_disk()
                 end
-            elseif state.current_page == 7 then
+            elseif state.current_page == 8 then
                 -- FX page: K1+K2 load tape preset
                 if state.k1_held then
                     load_tape_preset(state.tape_preset_selected)
                 end
-            elseif state.current_page == 9 then
+            elseif state.current_page == 10 then
                 -- LFO page
                 local lfo = state.lfos[state.lfo_selected]
 
@@ -2463,7 +2940,7 @@ function key(n, z)
                         lfo.dest_param = util.wrap(lfo.dest_param + 1, dest.param_min, dest.param_max)
                     end
                 end
-            elseif state.current_page == 10 then
+            elseif state.current_page == 11 then
                 -- SCENES page: Save scene
                 save_scene(state.scene_selected)
             end
@@ -2493,6 +2970,9 @@ function key(n, z)
                     toggle_snapshot_enabled(state.snapshot_selected)
                 end
             elseif state.current_page == 4 then
+                -- PLAY MODE page: K3 reserved for future use
+                -- (no action currently)
+            elseif state.current_page == 5 then
                 -- SEQUENCER page
                 if state.snapshot_player.mode == "live" then
                     show_notification("LIVE MODE", 1.5)
@@ -2509,13 +2989,13 @@ function key(n, z)
                         start_snapshot_sequencer()
                     end
                 end
-            elseif state.current_page == 7 then
+            elseif state.current_page == 8 then
                 -- FX page: K1+K3 reset to Clean preset
                 if state.k1_held then
                     state.tape_preset_selected = 1
                     load_tape_preset(1)
                 end
-            elseif state.current_page == 10 then
+            elseif state.current_page == 11 then
                 -- SCENES page
                 if state.k1_held then
                     clear_scene(state.scene_selected)
@@ -2537,7 +3017,7 @@ function redraw()
 
     screen.level(15)
     screen.move(64, 8)
-    local pages = {"PLAY", "SAMPLE", "SNAPSHOTS", "SEQUENCER", "ENVELOPE", "SCALE", "FX", "MIDI", "LFO", "SCENES"}
+    local pages = {"PLAY", "SAMPLE", "SNAPSHOTS", "PLAY MODE", "SEQUENCER", "ENVELOPE", "SCALE", "FX", "MIDI", "LFO", "SCENES"}
     screen.text_center(pages[state.current_page])
 
     if state.current_page == 1 then
@@ -2547,18 +3027,20 @@ function redraw()
     elseif state.current_page == 3 then
         draw_snapshots_page()
     elseif state.current_page == 4 then
-        draw_sequencer_page()
+        draw_play_mode_page()
     elseif state.current_page == 5 then
-        draw_envelope_page()
+        draw_sequencer_page()
     elseif state.current_page == 6 then
-        draw_scale_page()
+        draw_envelope_page()
     elseif state.current_page == 7 then
-        draw_fx_page()
+        draw_scale_page()
     elseif state.current_page == 8 then
-        draw_midi_page()
+        draw_fx_page()
     elseif state.current_page == 9 then
-        draw_lfo_page()
+        draw_midi_page()
     elseif state.current_page == 10 then
+        draw_lfo_page()
+    elseif state.current_page == 11 then
         draw_scenes_page()
     end
 
@@ -2934,6 +3416,104 @@ function draw_snapshots_page()
     screen.level(6)
     screen.move(4, 64)
     screen.text("K2:Jump  K3:En/Dis  K1+K3:Del")
+end
+
+function draw_play_mode_page()
+    screen.level(10)
+
+    local y_offset = 18
+    local line_height = 10
+    local current_line = 0
+
+    -- Mode (always shown, param 1)
+    screen.level(state.play_mode.selected_param == 1 and 15 or 6)
+    screen.move(4, y_offset + (current_line * line_height))
+    local mode_display = state.play_mode.mode == "chord" and "Chord" or
+                         state.play_mode.mode == "strum" and "Strum" or "Arp"
+    screen.text("Mode: " .. mode_display)
+    current_line = current_line + 1
+
+    -- Mode-specific parameters
+    if state.play_mode.mode == "strum" then
+        -- Rate (param 2)
+        screen.level(state.play_mode.selected_param == 2 and 15 or 6)
+        screen.move(4, y_offset + (current_line * line_height))
+        screen.text("Rate: " .. state.play_mode.strum_rate_ms .. "ms")
+        current_line = current_line + 1
+
+        -- Pattern (param 3)
+        screen.level(state.play_mode.selected_param == 3 and 15 or 6)
+        screen.move(4, y_offset + (current_line * line_height))
+        local pattern_display = state.play_mode.strum_pattern == "updown" and "Up-Down" or
+                                string.upper(state.play_mode.strum_pattern:sub(1,1)) ..
+                                state.play_mode.strum_pattern:sub(2)
+        screen.text("Pattern: " .. pattern_display)
+        current_line = current_line + 1
+
+        -- K2 help text
+        screen.level(8)
+        screen.move(4, y_offset + (current_line * line_height) + 5)
+        screen.text("K2: Trigger Strum")
+
+    elseif state.play_mode.mode == "arp" then
+        -- Rate (param 2)
+        screen.level(state.play_mode.selected_param == 2 and 15 or 6)
+        screen.move(4, y_offset + (current_line * line_height))
+        local rate_name = state.lfo_bpm_divisions[state.play_mode.arp_rate_div].name
+        screen.text("Rate: " .. rate_name)
+        current_line = current_line + 1
+
+        -- Pattern (param 3)
+        screen.level(state.play_mode.selected_param == 3 and 15 or 6)
+        screen.move(4, y_offset + (current_line * line_height))
+        local pattern_display = state.play_mode.arp_pattern == "updown" and "Up-Down" or
+                                string.upper(state.play_mode.arp_pattern:sub(1,1)) ..
+                                state.play_mode.arp_pattern:sub(2)
+        screen.text("Pattern: " .. pattern_display)
+        current_line = current_line + 1
+
+        -- Gate (param 4)
+        screen.level(state.play_mode.selected_param == 4 and 15 or 6)
+        screen.move(4, y_offset + (current_line * line_height))
+        local gate_name = state.play_mode.arp_gate_length == 0.25 and "Staccato" or
+                          state.play_mode.arp_gate_length == 0.5 and "Normal" or "Legato"
+        screen.text("Gate: " .. gate_name)
+        current_line = current_line + 1
+
+        -- Source (param 5)
+        screen.level(state.play_mode.selected_param == 5 and 15 or 6)
+        screen.move(4, y_offset + (current_line * line_height))
+        local source_display = string.upper(state.play_mode.arp_source:sub(1,1)) ..
+                               state.play_mode.arp_source:sub(2)
+        screen.text("Source: " .. source_display)
+        current_line = current_line + 1
+
+        -- Active (param 6)
+        screen.level(state.play_mode.selected_param == 6 and 15 or 6)
+        screen.move(4, y_offset + (current_line * line_height))
+        screen.text("Active: " .. (state.play_mode.arp_enabled and "On" or "Off"))
+        current_line = current_line + 1
+
+        -- Status indicator
+        if state.play_mode.arp_enabled and state.play_mode.playing then
+            screen.level(15)
+            screen.move(128, y_offset)
+            screen.text_right("⏵")
+        end
+
+        -- K2 help text
+        screen.level(8)
+        screen.move(4, 64)
+        screen.text("K2: Toggle Arp")
+    else
+        -- Chord mode - just show description
+        screen.level(8)
+        screen.move(4, y_offset + (current_line * line_height))
+        screen.text("All faders trigger")
+        current_line = current_line + 1
+        screen.move(4, y_offset + (current_line * line_height))
+        screen.text("simultaneously")
+    end
 end
 
 function draw_sequencer_page()
