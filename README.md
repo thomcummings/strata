@@ -41,7 +41,7 @@ strata transforms norns into a performance sampler controlled by MIDI faders. Pl
 - **Persistent storage** of snapshots and scenes
 
 ## Installation
-;install https://github.com/thomcummings/strata
+  ;install https://github.com/thomcummings/strata
 
 ## Quick Start
 
@@ -154,7 +154,7 @@ SuperCollider engine with custom sample looping and voice architecture.
 ## Links
 
 - Documentation: [GitHub](https://github.com/thomcummings/strata)
-- norns community: https://llllllll.co
+- lines community: [https://llllllll.co](https://llllllll.co/t/strata/73505)
 
 ---
 
