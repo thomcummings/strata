@@ -207,8 +207,8 @@ Engine_Strata : CroneEngine {
 
             sig = In.ar(in, 2);
 
-            // Apply drive/saturation
-            sig = (sig * drive).tanh;
+            // Apply drive/saturation - only when drive > 1
+            sig = sig + (((sig * drive).tanh - sig) * (drive - 1).clip(0, 10));
 
             // Select filter type: 0=LP, 1=HP, 2=BP
             filtered = Select.ar(filterType, [
@@ -220,116 +220,33 @@ Engine_Strata : CroneEngine {
             Out.ar(out, filtered);
         }).add;
 
-        // Greyhole Reverb SynthDef (mi-engines)
+        // Reverb SynthDef - simplified for reliability
         SynthDef(\greyhole, {
             arg in=0, out=0,
                 delayTime=0.1, damping=0.5, size=1.0, diff=0.707,
                 feedback=0.9, modDepth=0.1, modFreq=2.0, mix=0.0, amp=1.0;
 
-            var sig, verb, wet, dry;
+            var sig;
 
-            // Read input
+            // Read input and pass through with master amp control
             sig = In.ar(in, 2);
-            dry = sig;
-
-            // Greyhole reverb (mi-engines - high quality)
-            // Greyhole expects: delayTime, damping, size, diff, feedback, modDepth, modFreq
-            verb = Greyhole.ar(
-                sig,
-                delayTime.clip(0.001, 2.0),   // delay time (0.001-2.0)
-                damping.clip(0, 1),            // damping (0-1)
-                size.clip(0.5, 5.0),           // size (0.5-5.0)
-                diff.clip(0, 1),               // diffusion (0-1)
-                feedback.clip(0, 1),           // feedback (0-1)
-                modDepth.clip(0, 1),           // modulation depth (0-1)
-                modFreq.clip(0.1, 10)          // modulation freq (0.1-10)
-            );
-
-            // Mix wet/dry using crossfade
-            sig = XFade2.ar(dry, verb, mix.clip(0, 1) * 2 - 1);
-
-            // Apply master amp (for muting during recording)
             sig = sig * amp.clip(0, 1);
 
             Out.ar(out, sig);
         }).add;
 
-        // Tape FX SynthDef
+        // Tape FX SynthDef - simplified for reliability
         SynthDef(\tapeFX, {
             arg in=0, out=0,
                 mix=0.0, saturation=0.0, wow=0.0, flutter=0.0,
                 aging=0.0, noise=0.0, bias=0.5, compression=0.0,
                 dropout=0.0, width=1.0;
 
-            var sig, wet, dry, pitchMod, wowLFO, flutterLFO;
-            var compressed, aged, noiseSignal, dropoutGate;
-            var mid, side, widthMod;
+            var sig, wet, dry;
 
-            // Read input
+            // Read input and pass through unchanged for now
+            // TODO: Re-enable tape effects once basic playback is verified
             sig = In.ar(in, 2);
-            dry = sig;
-            wet = sig;
-
-            // Saturation (tape warmth/drive) - only apply when saturation > 0
-            wet = wet + (((wet * (1 + (saturation * 2))).tanh - wet) * saturation);
-
-            // Wow (slow pitch variation ~0.5Hz)
-            wowLFO = LFNoise1.kr(0.5) * wow * 0.02;  // ±2% pitch variation
-
-            // Flutter (fast pitch variation ~6Hz)
-            flutterLFO = LFNoise1.kr(6) * flutter * 0.01;  // ±1% pitch variation
-
-            // Combined pitch modulation via PitchShift
-            // Only apply when wow or flutter > 0 to avoid latency/artifacts
-            pitchMod = wowLFO + flutterLFO;
-            wet = SelectX.ar(
-                (wow + flutter).clip(0, 1),  // Crossfade: 0 = bypass, >0 = process
-                [
-                    wet,  // Bypass (no pitch shift)
-                    PitchShift.ar(wet, 0.2, 1.0 + pitchMod, 0.0, 0.1)  // Pitch shifted
-                ]
-            );
-
-            // Compression (tape compression character)
-            compressed = Compander.ar(
-                wet,
-                wet,
-                0.5,                           // Threshold
-                1.0,                           // Below ratio (no compression)
-                1.0 / (1.0 + (compression * 3)), // Above ratio (more compression = lower ratio)
-                0.01,                          // Attack time
-                0.1                            // Release time
-            );
-            wet = wet + ((compressed - wet) * compression);
-
-            // Aging (high-frequency loss)
-            aged = LPF.ar(wet, 20000 - (aging * 15000));  // 20kHz down to 5kHz
-            wet = wet + ((aged - wet) * aging);
-
-            // Bias (frequency response character)
-            // Bias > 0.5 = brighter, < 0.5 = darker
-            wet = BPeakEQ.ar(
-                wet,
-                3000,                          // Center frequency
-                1.0,                           // Reciprocal of Q
-                (bias - 0.5) * 6               // ±3dB boost/cut
-            );
-
-            // Noise (tape hiss)
-            noiseSignal = PinkNoise.ar(noise * 0.05);  // Keep noise subtle
-            wet = wet + [noiseSignal, noiseSignal];
-
-            // Dropout (random signal dropouts)
-            dropoutGate = LFNoise0.kr(dropout * 10).range(0, 1) > (dropout * 0.7);
-            wet = wet * dropoutGate;
-
-            // Stereo width control (mid/side processing)
-            mid = (wet[0] + wet[1]) * 0.5;
-            side = (wet[0] - wet[1]) * 0.5 * width;
-            wet = [mid + side, mid - side];
-
-            // Mix dry/wet
-            sig = XFade2.ar(dry, wet, mix * 2 - 1);
 
             Out.ar(out, sig);
         }).add;
