@@ -1,16 +1,16 @@
 # strata
 
-A sophisticated 8-voice sampler for monome norns, inspired by the Vestax Faderboard.
+An 8-voice sampler for monome norns, inspired by the Vestax Faderboard.
 
 ## Overview
 
-strata transforms norns into a performance sampler controlled by MIDI faders or the built-in encoders. Play samples chromatically across scales, morph between chord voicings, sequence harmonies, and shape sound with extensive modulation.
+strata transforms norns into a performance sampler controlled by MIDI faders. Play samples chromatically across scales, morph between chord voicings, generatively sequence harmonies. In-built FX and modulation.
 
 ## Features
 
 ### Core Playback
-- **8-voice polyphonic sampling** with individual ADSR envelopes
-- **Scale-aware** - Major, Minor, Dorian, Phrygian, Lydian, Mixolydian, Locrian, Chromatic
+- **8-voice polyphonic sampling** with ADSR envelopes
+- **Scale-aware** - Major, Minor, Natural, Harmonic, Pentatonic
 - **Two trigger modes**: Gate (continuous envelope control) or Trigger (retrigger on each crossing)
 - **Sample manipulation**: loop points, speed, reverse, crossfade time, gain
 - **Master filter**: LP/HP/BP with cutoff, resonance, and envelope modulation
@@ -19,7 +19,7 @@ strata transforms norns into a performance sampler controlled by MIDI faders or 
 ### Performance Tools
 - **Snapshots** (8 slots): Save and recall fader positions instantly
 - **Snapshot Sequencer**: Morph between snapshots with multiple modes:
-  - Sequential, Random, Pattern (up to 16 steps), Euclidean rhythms, Live (safe performance mode)
+  - Sequential, Random, Pattern (up to 16 steps), Live (safe performance mode)
   - Adjustable BPM, morph time, and duration
 - **Snapshot Packs** (10 built-in): Load complete harmonic palettes instantly
   - Basic Triads, I-IV-V Simple, Jazz 7ths, Minor Harmony
@@ -27,10 +27,13 @@ strata transforms norns into a performance sampler controlled by MIDI faders or 
   - Add9 Shimmer, Whole Tone Dream
 
 ### Modulation
-- **3 LFO engines** with multiple shapes (Sine, Triangle, Square, Random)
-- **Rate modes**: Hz or BPM-sync
-- **12 modulation destinations**: Individual faders, filter, sample parameters, envelope, octave
-- **Per-destination parameter selection** where applicable
+- **3 LFO engines** with multiple shapes (Sine, Triangle, Square, Random, Smooth Random)
+- **Rate modes**: Free-running or BPM-sync
+- **Multiple mod destinations**: Individual faders, filter, sample parameters, envelope, octave, fx parameters
+
+### Effects
+- **Reverb**: Greyhole reverb baked in
+- **Tape emulation**: Add warm saturation, noise, wow/flutter, ageing, and bias (with tape presets)
 
 ### Organization
 - **Scenes** (8 slots): Save/load complete instrument states including snapshots, sample, scale, all settings
@@ -40,18 +43,17 @@ strata transforms norns into a performance sampler controlled by MIDI faders or 
 ## Installation
 ;install https://github.com/thomcummings/strata
 
-Requires SuperCollider engine (included).
-
 ## Quick Start
 
-1. **Load a sample**: Navigate to SAMPLE page, press K2
+1. **Load or record a sample**: Navigate to SAMPLE page, press K2/K3
 2. **Choose a scale**: SCALE page → set scale type and root note
-3. **Play**: Use MIDI faders (CC 34-41, channel 1 by default) or control via norns
+3. **Play**: Use MIDI faders (CC 34-41, channel 1 by default) 
 4. **Save snapshot**: PLAY page → K2 saves current fader positions
 5. **Load chord pack**: SNAPSHOTS page → K1+E2 browse, K1+K2 load
 6. **Sequence**: SEQUENCER page → set mode/BPM, K3 to start
 
 ## Pages Overview
+Navigate between pages using E1
 
 ### PLAY (Page 1)
 Main performance view with fader visualization.
@@ -73,7 +75,13 @@ Snapshot library with 8 slots and pack browser.
 - K2: Jump to snapshot / K1+K2: Load snapshot pack
 - K3: Toggle enable/disable / K1+K3: Delete snapshot
 
-### SEQUENCER (Page 4)
+### PLAY MODES (Page 4)
+Choose between different performance styles 
+- Chord (all faders play simultaneously and sustained)
+- Strum (one-shot with control over strumming speed)
+- Arp (fader notes will arpeggiate with control over basic arp settings)
+
+### SEQUENCER (Page 5)
 Snapshot playback sequencer.
 - Modes: Live, Sequential, Random, Pattern, Euclidean
 - E2: Select parameter / E3: Edit value
@@ -81,7 +89,7 @@ Snapshot playback sequencer.
 - K2: Mode-specific (add to pattern, toggle rest behavior)
 - K3: Start/stop (disabled in Live mode)
 
-### ENVELOPE (Page 5)
+### ENVELOPE (Page 6)
 ADSR envelope shaping with filter modulation.
 - E2: Select parameter / E3: Edit value
 - Parameters: Attack, Decay, Sustain, Release, Filter Mod
@@ -97,12 +105,17 @@ MIDI controller configuration.
 - E2: Select parameter / E3: Edit value
 - Parameters: MIDI channel (1-16), Fader CC start (default 34)
 
-### LFO (Page 8)
+### FX (Page 8)
+End-of-chain tape emulation and reverb effects (in series)
+- E2: Select parameter / E3: Edit value
+- K1+E2: Scroll tape presets / K1+K2: Select tape preset
+
+### LFO (Page 9)
 Three independent LFO modulators.
 - E2: Select parameter / E3: Edit value
 - Parameters: LFO select, Enable, Shape, Rate Mode, Rate, Depth, Destination, Dest Param
 
-### SCENES (Page 9)
+### SCENES (Page 10)
 Complete instrument state management.
 - E2: Select scene slot
 - K2: Save scene
@@ -110,10 +123,9 @@ Complete instrument state management.
 
 ## Tips
 
-- **Start simple**: Load a sample, load "I-IV-V Simple" pack, set sequencer to random
+- **Start simple**: Load a sample, load preset pack, set sequencer to random
 - **Live mode**: Use sequencer Live mode during performance to prevent accidental triggering
-- **Filter tracking**: Try 2000-5000 Hz envelope→filter mod for classic synth movement
-- **Euclidean patterns**: Create rhythmic variation with pulses/steps/rotation
+- **Add modulation**: Try setting LFOs against filter cutoff, sample start point, and fx parameters for organic, drifting sounds
 - **Scene workflow**: Build your sound, save as scene, recall instantly later
 - **Custom packs**: Edit `/lib/snapshot_packs.lua` to create your own chord palettes
 
@@ -123,13 +135,14 @@ Default configuration:
 - Channel: 1
 - Fader CCs: 34-41 (8 faders)
 - Optional: Filter cutoff, resonance, voice filter offsets (configurable in code)
+- Optional: Play the sample chromatically with a USB-keyboard
 
 Change in MIDI page or edit `lib/midi_handler.lua` for advanced routing.
 
 ## Recording
 
 Recordings saved to: `/home/we/dust/audio/strata/`  
-Format: `YYYYMMDD_HHMMSS_strata_rec.wav`  
+Format: `YYYYMMDD/HHMMSS_strata_rec.wav`  
 Maximum duration: 30 seconds stereo
 
 ## Credits
