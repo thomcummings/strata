@@ -9,9 +9,11 @@ Engine_Strata : CroneEngine {
     var <masterGroup;
     var <lfos;
     var <monitorSynth;
+    var <tapeSynth;
     var <reverbSynth;
     var voiceBus;
     var filterBus;
+    var tapeBus;
     
     *new { arg context, doneCallback;
         ^super.new(context, doneCallback);
@@ -20,7 +22,8 @@ Engine_Strata : CroneEngine {
     alloc {
         // Allocate audio buses for signal routing
         voiceBus = Bus.audio(context.server, 2);    // voices → filter
-        filterBus = Bus.audio(context.server, 2);   // filter → reverb
+        filterBus = Bus.audio(context.server, 2);   // filter → tape
+        tapeBus = Bus.audio(context.server, 2);     // tape → reverb
 
         // Allocate buffer for sample (30 seconds stereo at 48kHz)
         buffer = Buffer.alloc(context.server, 48000 * 30, 2);
@@ -58,9 +61,25 @@ Engine_Strata : CroneEngine {
             \out, filterBus
         ], filterGroup);
 
-        // Create reverb synth (filter → reverb → output)
-        reverbSynth = Synth(\greyhole, [
+        // Create tape FX synth (filter → tape)
+        tapeSynth = Synth(\tapeFX, [
             \in, filterBus,
+            \out, tapeBus,
+            \mix, 0.0,             // Start completely dry
+            \saturation, 0.0,
+            \wow, 0.0,
+            \flutter, 0.0,
+            \aging, 0.0,
+            \noise, 0.0,
+            \bias, 0.5,
+            \compression, 0.0,
+            \dropout, 0.0,
+            \width, 1.0
+        ], masterGroup);
+
+        // Create reverb synth (tape → reverb → output)
+        reverbSynth = Synth(\greyhole, [
+            \in, tapeBus,
             \out, context.out_b,
             \delayTime, 0.2,      // Initial delay time (will be set by Lua)
             \damping, 0.5,         // Initial damping
@@ -225,7 +244,85 @@ Engine_Strata : CroneEngine {
 
             Out.ar(out, sig);
         }).add;
-        
+
+        // Tape FX SynthDef
+        SynthDef(\tapeFX, {
+            arg in=0, out=0,
+                mix=0.0, saturation=0.0, wow=0.0, flutter=0.0,
+                aging=0.0, noise=0.0, bias=0.5, compression=0.0,
+                dropout=0.0, width=1.0;
+
+            var sig, wet, dry, pitchMod, wowLFO, flutterLFO;
+            var compressed, aged, noiseSignal, dropoutGate;
+            var mid, side, widthMod;
+
+            // Read input
+            sig = In.ar(in, 2);
+            dry = sig;
+
+            // Saturation (tape warmth/drive)
+            wet = (sig * (1 + (saturation * 2))).tanh;
+
+            // Wow (slow pitch variation ~0.5Hz)
+            wowLFO = LFNoise1.kr(0.5) * wow * 0.02;  // ±2% pitch variation
+
+            // Flutter (fast pitch variation ~6Hz)
+            flutterLFO = LFNoise1.kr(6) * flutter * 0.01;  // ±1% pitch variation
+
+            // Combined pitch modulation via PitchShift
+            pitchMod = wowLFO + flutterLFO;
+            wet = PitchShift.ar(
+                wet,
+                0.2,                           // Window size
+                1.0 + pitchMod,                // Pitch ratio
+                0.0,                           // Pitch dispersion
+                0.1                            // Time dispersion
+            );
+
+            // Compression (tape compression character)
+            compressed = Compander.ar(
+                wet,
+                wet,
+                0.5,                           // Threshold
+                1.0,                           // Below ratio (no compression)
+                1.0 / (1.0 + (compression * 3)), // Above ratio (more compression = lower ratio)
+                0.01,                          // Attack time
+                0.1                            // Release time
+            );
+            wet = wet + ((compressed - wet) * compression);
+
+            // Aging (high-frequency loss)
+            aged = LPF.ar(wet, 20000 - (aging * 15000));  // 20kHz down to 5kHz
+            wet = wet + ((aged - wet) * aging);
+
+            // Bias (frequency response character)
+            // Bias > 0.5 = brighter, < 0.5 = darker
+            wet = BPeakEQ.ar(
+                wet,
+                3000,                          // Center frequency
+                1.0,                           // Reciprocal of Q
+                (bias - 0.5) * 6               // ±3dB boost/cut
+            );
+
+            // Noise (tape hiss)
+            noiseSignal = PinkNoise.ar(noise * 0.05);  // Keep noise subtle
+            wet = wet + [noiseSignal, noiseSignal];
+
+            // Dropout (random signal dropouts)
+            dropoutGate = LFNoise0.kr(dropout * 10).range(0, 1) > (dropout * 0.7);
+            wet = wet * dropoutGate;
+
+            // Stereo width control (mid/side processing)
+            mid = (wet[0] + wet[1]) * 0.5;
+            side = (wet[0] - wet[1]) * 0.5 * width;
+            wet = [mid + side, mid - side];
+
+            // Mix dry/wet
+            sig = XFade2.ar(dry, wet, mix * 2 - 1);
+
+            Out.ar(out, sig);
+        }).add;
+
         // LFO SynthDef
         SynthDef(\lfo, {
             arg bus=0, rate=1, depth=0.5, shape=0;
@@ -405,7 +502,58 @@ Engine_Strata : CroneEngine {
             var modFreq = msg[1].asFloat.clip(0.1, 10.0);
             reverbSynth.set(\modFreq, modFreq);
         });
-        
+
+        // Tape FX control
+        this.addCommand(\setTapeMix, "f", { arg msg;
+            var mix = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\mix, mix);
+        });
+
+        this.addCommand(\setTapeSaturation, "f", { arg msg;
+            var saturation = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\saturation, saturation);
+        });
+
+        this.addCommand(\setTapeWow, "f", { arg msg;
+            var wow = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\wow, wow);
+        });
+
+        this.addCommand(\setTapeFlutter, "f", { arg msg;
+            var flutter = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\flutter, flutter);
+        });
+
+        this.addCommand(\setTapeAging, "f", { arg msg;
+            var aging = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\aging, aging);
+        });
+
+        this.addCommand(\setTapeNoise, "f", { arg msg;
+            var noise = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\noise, noise);
+        });
+
+        this.addCommand(\setTapeBias, "f", { arg msg;
+            var bias = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\bias, bias);
+        });
+
+        this.addCommand(\setTapeCompression, "f", { arg msg;
+            var compression = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\compression, compression);
+        });
+
+        this.addCommand(\setTapeDropout, "f", { arg msg;
+            var dropout = msg[1].asFloat.clip(0.0, 1.0);
+            tapeSynth.set(\dropout, dropout);
+        });
+
+        this.addCommand(\setTapeWidth, "f", { arg msg;
+            var width = msg[1].asFloat.clip(0.0, 2.0);
+            tapeSynth.set(\width, width);
+        });
+
         // Voice parameters
         this.addCommand(\setVoiceAmp, "if", { arg msg;
             var voice = msg[1].asInteger;
@@ -529,6 +677,7 @@ Engine_Strata : CroneEngine {
         synths.do(_.free);
         lfos.do(_.free);
         if(monitorSynth.notNil, { monitorSynth.free; });
+        tapeSynth.free;
         reverbSynth.free;
         voiceGroup.free;
         filterGroup.free;
@@ -536,5 +685,6 @@ Engine_Strata : CroneEngine {
         buffer.free;
         voiceBus.free;
         filterBus.free;
+        tapeBus.free;
     }
 }
