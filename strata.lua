@@ -17,7 +17,8 @@ engine.name = "Strata"
 
 local ScaleSystem = include("lib/scale_system")
 local MidiHandler = include("lib/midi_handler")
-local SnapshotPacks = include("lib/snapshot_packs") 
+local SnapshotPacks = include("lib/snapshot_packs")
+local TapePresets = include("lib/tape_presets")
 local fileselect = require("fileselect")
 
 -- File selection state
@@ -93,6 +94,19 @@ local state = {
     reverb_mod_depth = 0.2,  -- 0.0 to 1.0 (modulation depth)
     reverb_mod_freq = 0.5,   -- 0.1 to 10.0 (modulation frequency)
 
+    -- Tape FX parameters
+    tape_mix = 0.0,          -- 0.0 to 1.0 (wet/dry blend)
+    tape_saturation = 0.0,   -- 0.0 to 1.0 (warmth/drive)
+    tape_wow = 0.0,          -- 0.0 to 1.0 (slow pitch variation)
+    tape_flutter = 0.0,      -- 0.0 to 1.0 (fast pitch variation)
+    tape_aging = 0.0,        -- 0.0 to 1.0 (high-freq loss)
+    tape_noise = 0.0,        -- 0.0 to 1.0 (tape hiss)
+    tape_bias = 0.5,         -- 0.0 to 1.0 (frequency response, 0.5=neutral)
+    tape_compression = 0.0,  -- 0.0 to 1.0 (tape compression)
+    tape_dropout = 0.0,      -- 0.0 to 1.0 (random dropouts)
+    tape_width = 1.0,        -- 0.0 to 2.0 (stereo width, 1.0=normal)
+    tape_preset_selected = 1, -- Currently selected preset (1-6)
+
     -- LFO parameters
     lfo_count = 3,  -- Can increase this later
     lfos = {
@@ -156,7 +170,17 @@ local state = {
         {name = "Rvb Feedback", has_param = false},
         {name = "Rvb Diff", has_param = false},
         {name = "Rvb ModDepth", has_param = false},
-        {name = "Rvb ModFreq", has_param = false}
+        {name = "Rvb ModFreq", has_param = false},
+        {name = "Tape Mix", has_param = false},
+        {name = "Tape Sat", has_param = false},
+        {name = "Tape Wow", has_param = false},
+        {name = "Tape Flutter", has_param = false},
+        {name = "Tape Aging", has_param = false},
+        {name = "Tape Noise", has_param = false},
+        {name = "Tape Bias", has_param = false},
+        {name = "Tape Comp", has_param = false},
+        {name = "Tape Dropout", has_param = false},
+        {name = "Tape Width", has_param = false}
     },
     
     -- LFO shape names
@@ -525,8 +549,59 @@ function apply_lfo_modulation()
             local base = state.reverb_mod_freq
             local new_val = util.clamp(base + (mod_amount * 5.0), 0.1, 10.0)
             engine.setReverbModFreq(new_val)
+
+        -- Tape FX parameters
+        elseif dest.name == "Tape Mix" then
+            local base = state.tape_mix
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setTapeMix(new_val)
+
+        elseif dest.name == "Tape Sat" then
+            local base = state.tape_saturation
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setTapeSaturation(new_val)
+
+        elseif dest.name == "Tape Wow" then
+            local base = state.tape_wow
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setTapeWow(new_val)
+
+        elseif dest.name == "Tape Flutter" then
+            local base = state.tape_flutter
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setTapeFlutter(new_val)
+
+        elseif dest.name == "Tape Aging" then
+            local base = state.tape_aging
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setTapeAging(new_val)
+
+        elseif dest.name == "Tape Noise" then
+            local base = state.tape_noise
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setTapeNoise(new_val)
+
+        elseif dest.name == "Tape Bias" then
+            local base = state.tape_bias
+            local new_val = util.clamp(base + (mod_amount * 0.3), 0.0, 1.0)
+            engine.setTapeBias(new_val)
+
+        elseif dest.name == "Tape Comp" then
+            local base = state.tape_compression
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setTapeCompression(new_val)
+
+        elseif dest.name == "Tape Dropout" then
+            local base = state.tape_dropout
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 1.0)
+            engine.setTapeDropout(new_val)
+
+        elseif dest.name == "Tape Width" then
+            local base = state.tape_width
+            local new_val = util.clamp(base + (mod_amount * 0.5), 0.0, 2.0)
+            engine.setTapeWidth(new_val)
         end
-        
+
         ::continue::
     end
 end
@@ -1195,6 +1270,37 @@ function load_snapshots()
     end
 end
 
+-- Tape preset loading function
+function load_tape_preset(preset_index)
+    local preset = TapePresets.get_preset(preset_index)
+    if preset then
+        state.tape_mix = preset.params.mix
+        state.tape_saturation = preset.params.saturation
+        state.tape_wow = preset.params.wow
+        state.tape_flutter = preset.params.flutter
+        state.tape_aging = preset.params.aging
+        state.tape_noise = preset.params.noise
+        state.tape_bias = preset.params.bias
+        state.tape_compression = preset.params.compression
+        state.tape_dropout = preset.params.dropout
+        state.tape_width = preset.params.width
+
+        -- Send all values to engine
+        engine.setTapeMix(state.tape_mix)
+        engine.setTapeSaturation(state.tape_saturation)
+        engine.setTapeWow(state.tape_wow)
+        engine.setTapeFlutter(state.tape_flutter)
+        engine.setTapeAging(state.tape_aging)
+        engine.setTapeNoise(state.tape_noise)
+        engine.setTapeBias(state.tape_bias)
+        engine.setTapeCompression(state.tape_compression)
+        engine.setTapeDropout(state.tape_dropout)
+        engine.setTapeWidth(state.tape_width)
+
+        show_notification("TAPE: " .. preset.name, 2.0)
+    end
+end
+
 -- Scene management functions
 function save_scene(slot)
     -- Capture complete state
@@ -1243,6 +1349,18 @@ function save_scene(slot)
         reverb_diff = state.reverb_diff,
         reverb_mod_depth = state.reverb_mod_depth,
         reverb_mod_freq = state.reverb_mod_freq,
+
+        -- Tape FX
+        tape_mix = state.tape_mix,
+        tape_saturation = state.tape_saturation,
+        tape_wow = state.tape_wow,
+        tape_flutter = state.tape_flutter,
+        tape_aging = state.tape_aging,
+        tape_noise = state.tape_noise,
+        tape_bias = state.tape_bias,
+        tape_compression = state.tape_compression,
+        tape_dropout = state.tape_dropout,
+        tape_width = state.tape_width,
 
         -- LFO (placeholder for future)
         lfos = {
@@ -1371,6 +1489,18 @@ function load_scene(slot)
     state.reverb_mod_depth = scene.reverb_mod_depth or 0.2
     state.reverb_mod_freq = scene.reverb_mod_freq or 0.5
 
+    -- Load tape FX (with defaults for backward compatibility)
+    state.tape_mix = scene.tape_mix or 0.0
+    state.tape_saturation = scene.tape_saturation or 0.0
+    state.tape_wow = scene.tape_wow or 0.0
+    state.tape_flutter = scene.tape_flutter or 0.0
+    state.tape_aging = scene.tape_aging or 0.0
+    state.tape_noise = scene.tape_noise or 0.0
+    state.tape_bias = scene.tape_bias or 0.5
+    state.tape_compression = scene.tape_compression or 0.0
+    state.tape_dropout = scene.tape_dropout or 0.0
+    state.tape_width = scene.tape_width or 1.0
+
     -- Load LFO (placeholder)
     state.lfos[1].rate = scene.lfos[1].rate
     state.lfos[1].depth = scene.lfos[1].depth
@@ -1431,6 +1561,18 @@ function load_scene(slot)
     engine.setReverbDiff(state.reverb_diff)
     engine.setReverbModDepth(state.reverb_mod_depth)
     engine.setReverbModFreq(state.reverb_mod_freq)
+
+    -- Apply tape FX settings
+    engine.setTapeMix(state.tape_mix)
+    engine.setTapeSaturation(state.tape_saturation)
+    engine.setTapeWow(state.tape_wow)
+    engine.setTapeFlutter(state.tape_flutter)
+    engine.setTapeAging(state.tape_aging)
+    engine.setTapeNoise(state.tape_noise)
+    engine.setTapeBias(state.tape_bias)
+    engine.setTapeCompression(state.tape_compression)
+    engine.setTapeDropout(state.tape_dropout)
+    engine.setTapeWidth(state.tape_width)
 
     for i = 0, state.num_faders - 1 do
         engine.setVoiceEnvelope(i, state.env_attack, state.env_decay, state.env_sustain, state.env_release)
@@ -2536,42 +2678,72 @@ function enc(n, delta)
         end
 
     elseif state.current_page == 8 then
-        -- FX page (reverb)
-        if n == 2 then
-            state.selected_param = util.wrap(state.selected_param + delta, 1, 8)
+        -- FX page (reverb + tape)
+        if state.k1_held and n == 2 then
+            -- K1+E2: Browse tape presets
+            state.tape_preset_selected = util.wrap(state.tape_preset_selected + delta, 1, TapePresets.get_count())
+        elseif n == 2 then
+            -- E2: Select parameter (1-18)
+            state.selected_param = util.wrap(state.selected_param + delta, 1, 18)
         elseif n == 3 then
+            -- E3: Edit parameter value
+            -- Reverb parameters (1-8)
             if state.selected_param == 1 then
-                -- Reverb Mix (1% increments)
                 state.reverb_mix = util.clamp(state.reverb_mix + (delta * 0.01), 0.0, 1.0)
                 engine.setReverbMix(state.reverb_mix)
             elseif state.selected_param == 2 then
-                -- Reverb Time
                 state.reverb_time = util.clamp(state.reverb_time + (delta * 0.1), 0.1, 10.0)
                 engine.setReverbTime(state.reverb_time)
             elseif state.selected_param == 3 then
-                -- Reverb Size
                 state.reverb_size = util.clamp(state.reverb_size + (delta * 0.1), 0.5, 5.0)
                 engine.setReverbSize(state.reverb_size)
             elseif state.selected_param == 4 then
-                -- Reverb Damping (1% increments)
                 state.reverb_damping = util.clamp(state.reverb_damping + (delta * 0.01), 0.0, 1.0)
                 engine.setReverbDamping(state.reverb_damping)
             elseif state.selected_param == 5 then
-                -- Reverb Feedback (1% increments)
                 state.reverb_feedback = util.clamp(state.reverb_feedback + (delta * 0.01), 0.0, 1.0)
                 engine.setReverbFeedback(state.reverb_feedback)
             elseif state.selected_param == 6 then
-                -- Reverb Diffusion (1% increments)
                 state.reverb_diff = util.clamp(state.reverb_diff + (delta * 0.01), 0.0, 1.0)
                 engine.setReverbDiff(state.reverb_diff)
             elseif state.selected_param == 7 then
-                -- Reverb Mod Depth (1% increments)
                 state.reverb_mod_depth = util.clamp(state.reverb_mod_depth + (delta * 0.01), 0.0, 1.0)
                 engine.setReverbModDepth(state.reverb_mod_depth)
             elseif state.selected_param == 8 then
-                -- Reverb Mod Freq
                 state.reverb_mod_freq = util.clamp(state.reverb_mod_freq + (delta * 0.1), 0.1, 10.0)
                 engine.setReverbModFreq(state.reverb_mod_freq)
+
+            -- Tape FX parameters (9-18)
+            elseif state.selected_param == 9 then
+                state.tape_mix = util.clamp(state.tape_mix + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeMix(state.tape_mix)
+            elseif state.selected_param == 10 then
+                state.tape_saturation = util.clamp(state.tape_saturation + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeSaturation(state.tape_saturation)
+            elseif state.selected_param == 11 then
+                state.tape_wow = util.clamp(state.tape_wow + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeWow(state.tape_wow)
+            elseif state.selected_param == 12 then
+                state.tape_flutter = util.clamp(state.tape_flutter + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeFlutter(state.tape_flutter)
+            elseif state.selected_param == 13 then
+                state.tape_aging = util.clamp(state.tape_aging + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeAging(state.tape_aging)
+            elseif state.selected_param == 14 then
+                state.tape_noise = util.clamp(state.tape_noise + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeNoise(state.tape_noise)
+            elseif state.selected_param == 15 then
+                state.tape_bias = util.clamp(state.tape_bias + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeBias(state.tape_bias)
+            elseif state.selected_param == 16 then
+                state.tape_compression = util.clamp(state.tape_compression + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeCompression(state.tape_compression)
+            elseif state.selected_param == 17 then
+                state.tape_dropout = util.clamp(state.tape_dropout + (delta * 0.01), 0.0, 1.0)
+                engine.setTapeDropout(state.tape_dropout)
+            elseif state.selected_param == 18 then
+                state.tape_width = util.clamp(state.tape_width + (delta * 0.1), 0.0, 2.0)
+                engine.setTapeWidth(state.tape_width)
             end
         end
 
@@ -2744,6 +2916,11 @@ function key(n, z)
                     show_notification("REST: " .. string.upper(state.snapshot_player.euclidean_rest_behavior), 1.5)
                     save_snapshots_to_disk()
                 end
+            elseif state.current_page == 8 then
+                -- FX page: K1+K2 load tape preset
+                if state.k1_held then
+                    load_tape_preset(state.tape_preset_selected)
+                end
             elseif state.current_page == 10 then
                 -- LFO page
                 local lfo = state.lfos[state.lfo_selected]
@@ -2811,6 +2988,12 @@ function key(n, z)
                     else
                         start_snapshot_sequencer()
                     end
+                end
+            elseif state.current_page == 8 then
+                -- FX page: K1+K3 reset to Clean preset
+                if state.k1_held then
+                    state.tape_preset_selected = 1
+                    load_tape_preset(1)
                 end
             elseif state.current_page == 11 then
                 -- SCENES page
@@ -3571,7 +3754,7 @@ function draw_fx_page()
     -- Title
     screen.level(15)
     screen.move(4, 12)
-    screen.text("REVERB")
+    screen.text("FX")
 
     -- Dividing line
     screen.level(4)
@@ -3579,43 +3762,73 @@ function draw_fx_page()
     screen.line(124, 14)
     screen.stroke()
 
-    -- Draw parameters with scrolling
-    local params = {"Mix", "Time", "Size", "Damping", "Feedback", "Diffusion", "Mod Depth", "Mod Freq"}
-    local param_start_y = 22
-    local param_spacing = 7
-    local visible_params = 5
+    -- Parameter list with headers (20 total items: 2 headers + 18 params)
+    local items = {
+        {type = "header", text = "== REVERB =="},
+        {type = "param", idx = 1, name = "Mix", value = string.format("%d%%", math.floor(state.reverb_mix * 100))},
+        {type = "param", idx = 2, name = "Time", value = string.format("%.1fs", state.reverb_time)},
+        {type = "param", idx = 3, name = "Size", value = string.format("%.1f", state.reverb_size)},
+        {type = "param", idx = 4, name = "Damping", value = string.format("%d%%", math.floor(state.reverb_damping * 100))},
+        {type = "param", idx = 5, name = "Feedback", value = string.format("%d%%", math.floor(state.reverb_feedback * 100))},
+        {type = "param", idx = 6, name = "Diffusion", value = string.format("%d%%", math.floor(state.reverb_diff * 100))},
+        {type = "param", idx = 7, name = "Mod Depth", value = string.format("%d%%", math.floor(state.reverb_mod_depth * 100))},
+        {type = "param", idx = 8, name = "Mod Freq", value = string.format("%.1fHz", state.reverb_mod_freq)},
+        {type = "header", text = "== TAPE FX =="},
+        {type = "param", idx = 9, name = "Mix", value = string.format("%d%%", math.floor(state.tape_mix * 100))},
+        {type = "param", idx = 10, name = "Saturation", value = string.format("%d%%", math.floor(state.tape_saturation * 100))},
+        {type = "param", idx = 11, name = "Wow", value = string.format("%d%%", math.floor(state.tape_wow * 100))},
+        {type = "param", idx = 12, name = "Flutter", value = string.format("%d%%", math.floor(state.tape_flutter * 100))},
+        {type = "param", idx = 13, name = "Aging", value = string.format("%d%%", math.floor(state.tape_aging * 100))},
+        {type = "param", idx = 14, name = "Noise", value = string.format("%d%%", math.floor(state.tape_noise * 100))},
+        {type = "param", idx = 15, name = "Bias", value = string.format("%d%%", math.floor(state.tape_bias * 100))},
+        {type = "param", idx = 16, name = "Compression", value = string.format("%d%%", math.floor(state.tape_compression * 100))},
+        {type = "param", idx = 17, name = "Dropout", value = string.format("%d%%", math.floor(state.tape_dropout * 100))},
+        {type = "param", idx = 18, name = "Width", value = string.format("%.1f", state.tape_width)},
+    }
 
+    -- Scrolling logic
+    local param_start_y = 20
+    local param_spacing = 6
+    local visible_rows = 7
+
+    -- Calculate scroll offset to keep selected param visible
     local scroll_offset = 0
-    if state.selected_param > visible_params then
-        scroll_offset = -(state.selected_param - visible_params) * param_spacing
+    if state.selected_param > visible_rows - 1 then
+        scroll_offset = -(state.selected_param - (visible_rows - 1)) * param_spacing
     end
 
-    for i = 1, 8 do
+    -- Draw all items with scrolling
+    for i, item in ipairs(items) do
         local y = param_start_y + (i * param_spacing) + scroll_offset
 
+        -- Only draw if visible
         if y > 16 and y < 64 then
-            screen.level(state.selected_param == i and 15 or 6)
-            screen.move(4, y)
-            screen.text(params[i] .. ":")
-
-            screen.move(70, y)
-            if i == 1 then
-                screen.text(string.format("%d%%", math.floor(state.reverb_mix * 100)))
-            elseif i == 2 then
-                screen.text(string.format("%.1fs", state.reverb_time))
-            elseif i == 3 then
-                screen.text(string.format("%.1f", state.reverb_size))
-            elseif i == 4 then
-                screen.text(string.format("%d%%", math.floor(state.reverb_damping * 100)))
-            elseif i == 5 then
-                screen.text(string.format("%d%%", math.floor(state.reverb_feedback * 100)))
-            elseif i == 6 then
-                screen.text(string.format("%d%%", math.floor(state.reverb_diff * 100)))
-            elseif i == 7 then
-                screen.text(string.format("%d%%", math.floor(state.reverb_mod_depth * 100)))
-            elseif i == 8 then
-                screen.text(string.format("%.1fHz", state.reverb_mod_freq))
+            if item.type == "header" then
+                -- Draw header
+                screen.level(10)
+                screen.move(4, y)
+                screen.text(item.text)
+            else
+                -- Draw parameter
+                screen.level(state.selected_param == item.idx and 15 or 6)
+                screen.move(8, y)
+                screen.text(item.name .. ":")
+                screen.move(75, y)
+                screen.text(item.value)
             end
+        end
+    end
+
+    -- Show tape preset browser when K1 held
+    if state.k1_held then
+        screen.level(15)
+        screen.move(4, 58)
+        local preset = TapePresets.get_preset(state.tape_preset_selected)
+        if preset then
+            screen.text("K1+E2: " .. preset.name)
+            screen.level(6)
+            screen.move(4, 64)
+            screen.text(preset.description)
         end
     end
 end
