@@ -277,13 +277,13 @@ Engine_Strata : CroneEngine {
             wet = wet + (((wet * (1 + (saturation * 4))).tanh - wet) * saturation);
 
             // Wow and Flutter (pitch variation via modulated delay)
-            // Only apply when wow or flutter > 0 to avoid latency
+            // Dramatically increased depth for pronounced wobble effect
             // Wow: slow pitch variation ~0.5Hz
-            wowMod = LFNoise1.kr(0.5) * wow * 0.003;  // ±3ms variation
+            wowMod = LFNoise1.kr(0.5) * wow * 0.020;  // ±20ms variation (was ±3ms)
             // Flutter: fast pitch variation ~6Hz
-            flutterMod = LFNoise1.kr(6) * flutter * 0.001;  // ±1ms variation
-            // Combined modulation - base delay 50ms + modulation
-            delayTime = 0.05 + wowMod + flutterMod;
+            flutterMod = LFNoise1.kr(6) * flutter * 0.010;  // ±10ms variation (was ±1ms)
+            // Combined modulation - using smaller base delay to minimize latency
+            delayTime = 0.020 + wowMod + flutterMod;  // 20ms base (was 50ms)
             wet = Select.ar(
                 ((wow + flutter) > 0).asInteger,
                 [
@@ -334,6 +334,10 @@ Engine_Strata : CroneEngine {
             mid = (wet[0] + wet[1]) * 0.5;
             side = (wet[0] - wet[1]) * 0.5 * width;
             wet = [mid + side, mid - side];
+
+            // Apply makeup gain to compensate for processing losses
+            // Ensures unity gain when all effects are bypassed
+            wet = wet * 1.1;  // Slight boost to compensate for cumulative losses
 
             // Mix dry/wet
             sig = XFade2.ar(dry, wet, mix * 2 - 1);
