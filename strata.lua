@@ -3791,10 +3791,19 @@ function draw_fx_page()
     local param_spacing = 6
     local visible_rows = 7
 
+    -- Find the array index of the selected parameter
+    local selected_item_index = 0
+    for i, item in ipairs(items) do
+        if item.type == "param" and item.idx == state.selected_param then
+            selected_item_index = i
+            break
+        end
+    end
+
     -- Calculate scroll offset to keep selected param visible
     local scroll_offset = 0
-    if state.selected_param > visible_rows - 1 then
-        scroll_offset = -(state.selected_param - (visible_rows - 1)) * param_spacing
+    if selected_item_index > visible_rows then
+        scroll_offset = -(selected_item_index - visible_rows) * param_spacing
     end
 
     -- Draw all items with scrolling
